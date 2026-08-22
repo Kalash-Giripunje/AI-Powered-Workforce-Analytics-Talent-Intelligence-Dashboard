@@ -23,13 +23,13 @@ export const Sidebar = ({
   userRole
 }) => {
   const navItems = [
-    { id: 'dashboard', label: 'Executive Overview', icon: LayoutDashboard, roles: ['HR_ADMIN'] },
-    { id: 'attendance', label: 'Attendance & Check-in', icon: Clock, roles: ['HR_ADMIN', 'EMPLOYEE'] },
-    { id: 'leave', label: 'Leave Applications', icon: CalendarDays, roles: ['HR_ADMIN', 'EMPLOYEE'] },
-    { id: 'shifts', label: 'Shift Allocation & Requests', icon: CalendarRange, roles: ['HR_ADMIN', 'EMPLOYEE'] },
-    { id: 'employees', label: 'Employee & Performance Mgmt', icon: Users, roles: ['HR_ADMIN'] },
-    { id: 'timesheets', label: 'Timesheet & Billable Hours', icon: FileSpreadsheet, roles: ['HR_ADMIN'] },
-    { id: 'payroll', label: 'Payroll & Compensation', icon: Banknote, roles: ['HR_ADMIN', 'EMPLOYEE'] },
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
+    { id: 'attendance', label: 'Attendance & Check-in', icon: Clock, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
+    { id: 'leave', label: 'Leave Applications', icon: CalendarDays, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
+    { id: 'shifts', label: 'Shift Allocation & Requests', icon: CalendarRange, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
+    { id: 'payroll', label: 'Payroll & Compensation', icon: Banknote, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
+    { id: 'employees', label: 'My Team & Workforce', icon: Users, roles: ['HR_ADMIN', 'MANAGER'] },
+    { id: 'timesheets', label: 'Timesheet & Billable Hours', icon: FileSpreadsheet, roles: ['HR_ADMIN', 'MANAGER'] },
     { id: 'ai_planning', label: 'AI Workforce Planning', icon: BrainCircuit, roles: ['HR_ADMIN'] },
     { id: 'reports', label: 'Reports & Analytics', icon: FileText, roles: ['HR_ADMIN'] },
     { id: 'audit', label: 'Audit Logs & RBAC', icon: ShieldAlert, roles: ['HR_ADMIN'] },
@@ -46,26 +46,28 @@ export const Sidebar = ({
             DASHBOARD
           </h3>
           <p className="text-[10px] text-slate-400 font-medium">
-            {userRole === 'HR_ADMIN' ? 'HR Workforce Hub' : 'Employee Self-Service'}
+            {userRole === 'HR_ADMIN' ? 'HR Workforce Hub' : userRole === 'MANAGER' ? 'Manager Team Workspace' : 'Employee Self-Service'}
           </p>
         </div>
 
-        <nav className="space-y-1">
+        <nav className="space-y-2">
           {visibleItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
             return (
               <button
                 key={item.id}
+                aria-current={isActive ? 'page' : undefined}
                 onClick={() => setActiveTab(item.id)}
-                className={`group flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-xs font-semibold transition-all duration-200 ${
+                tabIndex={0}
+                className={`group flex w-full items-center gap-3 rounded-lg px-3.5 py-3 text-sm font-semibold transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
                   isActive
-                    ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-600/25 translate-x-0.5'
-                    : 'text-slate-600 hover:bg-slate-200/70 hover:text-slate-900 hover:translate-x-1 dark:text-slate-400 dark:hover:bg-slate-800/70 dark:hover:text-slate-200'
+                    ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-600/25 transform translate-x-0.5'
+                    : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
                 }`}
               >
-                <Icon className={`h-4 w-4 transition-transform duration-200 group-hover:scale-110 ${isActive ? 'text-white' : 'text-slate-500 dark:text-slate-400 group-hover:text-indigo-600 dark:group-hover:text-indigo-400'}`} />
-                <span>{item.label}</span>
+                <Icon className={`h-5 w-5 flex-shrink-0 transition-transform duration-200 ${isActive ? 'text-white' : 'text-slate-500 dark:text-slate-400 group-hover:text-indigo-600 dark:group-hover:text-indigo-400'}`} />
+                <span className="truncate">{item.label}</span>
                 {item.id === 'ai_planning' && (
                   <span className="ml-auto rounded-full bg-purple-100 px-2 py-0.5 text-[9px] font-extrabold text-purple-700 dark:bg-purple-950/80 dark:text-purple-300">
                     AI
@@ -88,7 +90,7 @@ export const Sidebar = ({
           </span>
         </div>
         <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-tight">
-          Live biometric sync & AI analytics primed
+          Attendance data synchronized & AI analytics ready
         </p>
       </div>
     </aside>

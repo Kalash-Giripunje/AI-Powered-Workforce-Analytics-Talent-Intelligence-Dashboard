@@ -325,7 +325,7 @@ export const INITIAL_ATTENDANCE = [
     checkOut: '18:15',
     workingHours: 9.38,
     status: 'Present',
-    verificationMethod: 'Facial Recognition',
+    verificationMethod: 'Server-verified',
     gpsLocation: 'New York HQ (40.7128, -74.0060)',
     isAnomaly: false
   },
@@ -340,7 +340,7 @@ export const INITIAL_ATTENDANCE = [
     checkOut: '18:45',
     workingHours: 9.66,
     status: 'Present',
-    verificationMethod: 'Biometric',
+    verificationMethod: 'Server-verified',
     isAnomaly: false
   },
   {
@@ -354,7 +354,7 @@ export const INITIAL_ATTENDANCE = [
     checkOut: '21:30',
     workingHours: 11.7,
     status: 'Late',
-    verificationMethod: 'GPS',
+    verificationMethod: 'Server-verified',
     gpsLocation: 'Remote NYC Hub (40.7306, -73.9352)',
     isAnomaly: true,
     anomalyReason: 'Flagged check-in (+48m) and excessive overtime (>11h in a day)'
@@ -370,7 +370,7 @@ export const INITIAL_ATTENDANCE = [
     checkOut: '--:--',
     workingHours: 0,
     status: 'Absent',
-    verificationMethod: 'Biometric',
+    verificationMethod: 'Server-verified',
     isAnomaly: true,
     anomalyReason: 'Unscheduled absence without prior leave submission'
   },
@@ -385,7 +385,7 @@ export const INITIAL_ATTENDANCE = [
     checkOut: '17:30',
     workingHours: 8.75,
     status: 'Present',
-    verificationMethod: 'QR Code',
+    verificationMethod: 'Server-verified',
     isAnomaly: false
   },
   {
@@ -399,7 +399,7 @@ export const INITIAL_ATTENDANCE = [
     checkOut: '19:10',
     workingHours: 9.96,
     status: 'Present',
-    verificationMethod: 'Facial Recognition',
+    verificationMethod: 'Server-verified',
     isAnomaly: false
   }
 ];
@@ -662,7 +662,7 @@ export const INITIAL_NOTIFICATIONS = [
   },
   {
     id: 'NOTIF-3',
-    title: 'Biometric Attendance Anomaly Flagged',
+    title: 'Attendance Verification Anomaly Flagged',
     message: 'Emily Watson marked unscheduled absence for Night Shift on Aug 04.',
     timestamp: '2 hours ago',
     type: 'ATTENDANCE',

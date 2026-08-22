@@ -47,7 +47,7 @@ export const SettingsPage = () => {
   };
 
   const integrations = [
-    { name: 'Biometric Devices (ZKTeco / HID Global)', category: 'Hardware Attendance', status: 'Connected', icon: Cpu, color: 'text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60' },
+    { name: 'Optional Attendance Device Integration', category: 'Workforce Access', status: 'Not Configured', icon: Cpu, color: 'text-amber-600 bg-amber-50 dark:bg-amber-950/60' },
     { name: 'SAP & Oracle HRMS / SuccessFactors', category: 'Enterprise ERP System', status: 'Syncing (5m ago)', icon: Server, color: 'text-blue-600 bg-blue-50 dark:bg-blue-950/60' },
     { name: 'Payroll Software (ADP / Gusto)', category: 'Compensation Export', status: 'Active API', icon: Database, color: 'text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60' },
     { name: 'Microsoft Teams & Slack Webhooks', category: 'Instant Notifications', status: 'Enabled', icon: Bell, color: 'text-purple-600 bg-purple-50 dark:bg-purple-950/60' },
@@ -95,7 +95,7 @@ export const SettingsPage = () => {
               <div className="mt-1 font-bold text-slate-900 dark:text-white">{formatSettingValue(settings.currency)}</div>
             </div>
             <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/60">
-              <div className="text-slate-500 dark:text-slate-400">Biometric Sync</div>
+              <div className="text-slate-500 dark:text-slate-400">Attendance Sync (optional)</div>
               <div className="mt-1 font-bold text-slate-900 dark:text-white">{formatSettingValue(settings.biometricSyncEnabled)}</div>
             </div>
             <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/60">
@@ -162,7 +162,7 @@ export const SettingsPage = () => {
             </div>
 
             <div>
-              <label className="font-semibold block mb-1">Biometric Data Retention Policy</label>
+              <label className="font-semibold block mb-1">Attendance Data Retention Policy</label>
               <select className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 dark:border-slate-800 dark:bg-slate-800">
                 <option>90 Days (GDPR & CCPA Compliant)</option>
                 <option>180 Days</option>
@@ -178,7 +178,7 @@ export const SettingsPage = () => {
         <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
           <div>
             <h3 className="text-sm font-bold text-slate-900 dark:text-white">Connected Enterprise Systems & API Gateways</h3>
-            <p className="text-xs text-slate-500">Native integrations with hardware biometric terminals, ERPs, and collaboration suites</p>
+            <p className="text-xs text-slate-500">Device sync and external integrations for attendance (optional)</p>
           </div>
           <span className="rounded bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
             6 / 6 Active

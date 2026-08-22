@@ -81,25 +81,39 @@ export const AIWorkforcePlanning = ({ employees }) => {
           </div>
 
           <div className="mt-4 space-y-3">
-            {employees.slice(0, 4).map((emp) => (
-              <div
-                key={emp.empId}
-                className="flex items-center justify-between rounded-xl border border-indigo-100 bg-indigo-50/40 p-3.5 dark:border-indigo-900/30 dark:bg-indigo-950/20"
-              >
-                <div className="flex items-center gap-3">
-                  <img src={emp.avatar} alt={emp.firstName} className="h-10 w-10 rounded-full object-cover" />
-                  <div>
-                    <div className="text-xs font-bold text-slate-900 dark:text-white">
-                      {emp.firstName} {emp.lastName} ({emp.empId})
-                    </div>
-                    <div className="text-[10px] text-slate-500">
-                      {emp.jobRole} • {emp.department} • Manager: {emp.managerName}
-                    </div>
-                    <div className="mt-1 text-[11px] text-indigo-700 dark:text-indigo-300 font-medium">
-                      <span className="font-bold">Core Competencies:</span> {emp.skills.join(', ')}
+            {employees.slice(0, 4).map((emp, idx) => {
+              const rowKey = emp?.empId || `emp-${idx}`;
+              const avatar = emp?.avatar && typeof emp.avatar === 'string' && emp.avatar.trim() !== '' ? emp.avatar : null;
+              const skillsArr = Array.isArray(emp?.skills)
+                ? emp.skills
+                : (typeof emp?.skills === 'string' && emp.skills.trim() ? [emp.skills] : []);
+              const skillsDisplay = skillsArr.length ? skillsArr.join(', ') : 'N/A';
+
+              return (
+                <div
+                  key={rowKey}
+                  className="flex items-center justify-between rounded-xl border border-indigo-100 bg-indigo-50/40 p-3.5 dark:border-indigo-900/30 dark:bg-indigo-950/20"
+                >
+                  <div className="flex items-center gap-3">
+                    {avatar ? (
+                      <img src={avatar} alt={emp?.firstName || ''} className="h-10 w-10 rounded-full object-cover" />
+                    ) : (
+                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-100 text-indigo-700 font-bold dark:bg-indigo-950 dark:text-indigo-300">
+                        {(emp?.firstName?.[0] || emp?.empId?.slice(-2) || 'NA')}
+                      </div>
+                    )}
+                    <div>
+                      <div className="text-xs font-bold text-slate-900 dark:text-white">
+                        {emp?.firstName || ''} {emp?.lastName || ''} ({emp?.empId || 'N/A'})
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        {emp?.jobRole || '—'} • {emp?.department || '—'} • Manager: {emp?.managerName || '—'}
+                      </div>
+                      <div className="mt-1 text-[11px] text-indigo-700 dark:text-indigo-300 font-medium">
+                        <span className="font-bold">Core Competencies:</span> {skillsDisplay}
+                      </div>
                     </div>
                   </div>
-                </div>
 
                 <div className="text-right">
                   <div className="text-xs font-bold text-emerald-600 dark:text-emerald-400 flex items-center justify-end gap-1">
@@ -110,7 +124,8 @@ export const AIWorkforcePlanning = ({ employees }) => {
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>

@@ -6,14 +6,18 @@ import {
   INITIAL_LEAVE_BALANCE
 } from './data/mockData';
 
-import { api } from './services/api';
+import { api, clearAuthSession, persistAuthSession } from './services/api';
 
 // Layout Components
 import { Navbar } from './components/layout/Navbar';
 import { Sidebar } from './components/layout/Sidebar';
 
+// Auth
+import { LoginPage } from './components/auth/LoginPage';
+
 // Views
 import { ExecutiveDashboard } from './components/dashboard/ExecutiveDashboard';
+import { ManagerDashboard } from './components/dashboard/ManagerDashboard';
 import { EmployeeManagement } from './components/employees/EmployeeManagement';
 import { AttendanceManagement } from './components/attendance/AttendanceManagement';
 import { LeaveManagement } from './components/leave/LeaveManagement';
@@ -27,19 +31,100 @@ import { SettingsPage } from './components/settings/SettingsPage';
 // Overlays
 import { AIChatbotModal } from './components/ai/AIChatbotModal';
 import { NotificationsDrawer } from './components/notifications/NotificationsDrawer';
+import { ChangePasswordModal } from './components/auth/ChangePasswordModal';
+
+const AUTH_USER_KEY = 'nexus_hrms_auth_user';
+
+function normalizeRole(value) {
+  if (!value) return 'EMPLOYEE';
+  const role = String(value).toUpperCase();
+  if (role.includes('MANAGER')) return 'MANAGER';
+  if (role.includes('HR') || role.includes('ADMIN')) return 'HR_ADMIN';
+  return 'EMPLOYEE';
+}
+
+function getStoredUser() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(AUTH_USER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
 
 export function App() {
-  const [userRole, setUserRole] = useState('HR_ADMIN');
+  const [authenticatedUser, setAuthenticatedUser] = useState(getStoredUser);
+  const [isAuthenticated, setIsAuthenticated] = useState(Boolean(authenticatedUser));
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState('');
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [lastLoginPassword, setLastLoginPassword] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
 
-  const handleRoleChange = (role) => {
-    setUserRole(role);
-    if (role === 'EMPLOYEE') {
-      const allowedEmployeeTabs = ['attendance', 'leave', 'shifts', 'payroll'];
-      if (!allowedEmployeeTabs.includes(activeTab)) {
-        setActiveTab('attendance');
+  const handleLogin = async (credentials) => {
+    setAuthLoading(true);
+    setAuthError('');
+    // retain the raw password in transient state (NOT persisted) to allow a smooth change-password flow
+    setLastLoginPassword(credentials.password);
+    try {
+      const response = await api.login(credentials);
+      const user = response?.user ?? null;
+      const token = response?.token ?? null;
+      if (!user || !token) {
+        throw new Error('Authentication failed.');
       }
+      persistAuthSession(token, user);
+      setAuthenticatedUser(user);
+      setIsAuthenticated(true);
+      // Land employees on their personal dashboard after login
+      setActiveTab('dashboard');
+      // If the account is using the default password, prompt the user (they may keep default or change it)
+      if (user?.passwordStatus === 'default') {
+        setShowChangePasswordModal(true);
+      }
+    } catch (error) {
+      const message = error?.response?.data?.detail || error.message || 'Unable to connect to the authentication service.';
+      setAuthError(message);
+      setIsAuthenticated(false);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleProfileUpdated = async (updatedProfile) => {
+    if (!updatedProfile || typeof updatedProfile !== 'object') {
+      try {
+        const data = await api.getProfile();
+        setProfile(data || null);
+      } catch (err) {
+        console.error('Failed to refresh profile after update:', err);
+      }
+      return;
+    }
+
+    setProfile((prev) => ({
+      ...(prev || {}),
+      ...updatedProfile,
+      avatar: null,
+      avatarId: updatedProfile.avatarId || prev?.avatarId || 'avatar-01',
+    }));
+  };
+
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+    } catch (error) {
+      console.warn('Logout request failed:', error);
+    } finally {
+      clearAuthSession();
+      setAuthenticatedUser(null);
+      setProfile(null);
+      setIsAuthenticated(false);
+      setSelectedAttendanceEmployeeId('');
+      setAuthError('');
+      setActiveTab('dashboard');
     }
   };
 
@@ -47,6 +132,8 @@ export function App() {
   const [employees, setEmployees] = useState([]);
   const [employeesLoading, setEmployeesLoading] = useState(false);
   const [employeesError, setEmployeesError] = useState(null);
+  // employee pagination metadata (server-side)
+  const [employeePagination, setEmployeePagination] = useState({ total: 0, page: 1, size: 50, pages: 1 });
   const [selectedAttendanceEmployeeId, setSelectedAttendanceEmployeeId] = useState('');
   const [selectedLeaveEmployeeId, setSelectedLeaveEmployeeId] = useState('');
   const [selectedShiftEmployeeId, setSelectedShiftEmployeeId] = useState('');
@@ -54,6 +141,7 @@ export function App() {
   const [attendance, setAttendance] = useState([]);
   const [attendanceLoading, setAttendanceLoading] = useState(false);
   const [attendanceError, setAttendanceError] = useState(null);
+  const [attendancePagination, setAttendancePagination] = useState({ total: 0, page: 1, size: 50, pages: 1 });
   const [leaves, setLeaves] = useState([]);
   const [leaveLoading, setLeaveLoading] = useState(false);
   const [leaveError, setLeaveError] = useState(null);
@@ -73,6 +161,10 @@ export function App() {
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [notificationsError, setNotificationsError] = useState(null);
   const [profile, setProfile] = useState(null);
+  // Default to non-privileged role when role is missing to avoid accidental privilege escalation in the UI
+  const userRole = normalizeRole(authenticatedUser?.role || profile?.role || 'EMPLOYEE');
+  const currentEmpName = authenticatedUser?.name || profile?.name || 'User';
+  const currentEmpId = authenticatedUser?.empId || profile?.empId || null;
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditLogsLoading, setAuditLogsLoading] = useState(false);
   const [auditLogsError, setAuditLogsError] = useState(null);
@@ -82,27 +174,94 @@ export function App() {
     earnedLeave: { total: 0, used: 0, remaining: 0 },
     parentalLeave: { total: 0, used: 0, remaining: 0 }
   });
+  const isHrAdmin = userRole === 'HR_ADMIN';
+  const isManager = userRole === 'MANAGER';
+  const canViewTeam = isHrAdmin || isManager;
 
   // Punch State
-  const [isCheckedIn, setIsCheckedIn] = useState(true);
-  const [currentCheckInTime, setCurrentCheckInTime] = useState('08:52 AM');
+  const [isCheckedIn, setIsCheckedIn] = useState(false);
+  const [currentCheckInTime, setCurrentCheckInTime] = useState(null);
+  const [attendanceSessionCompleted, setAttendanceSessionCompleted] = useState(false);
+  const [currentCheckOutTime, setCurrentCheckOutTime] = useState(null);
+  const [gpsStatus, setGpsStatus] = useState({
+    state: 'idle',
+    message: 'Location check will run before attendance is recorded.',
+    distance: null,
+  });
+
+  // Holidays state for Attendance UI
+  const [holidays, setHolidays] = useState([]);
+  const [holidaysLoading, setHolidaysLoading] = useState(false);
+  const [holidaysError, setHolidaysError] = useState(null);
 
   // Overlays
   const [isAIChatOpen, setIsAIChatOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [showChangePasswordForm, setShowChangePasswordForm] = useState(false);
 
   useEffect(() => {
-    fetchDashboardMetrics();
+    const restoreSession = async () => {
+      const existingToken = localStorage.getItem('nexus_hrms_auth_token');
+      if (!existingToken) {
+        setIsAuthenticated(false);
+        return;
+      }
+
+      try {
+        const currentUser = await api.getCurrentUser();
+        const restoredRole = normalizeRole(currentUser?.role || 'EMPLOYEE');
+        setAuthenticatedUser(currentUser || null);
+        setIsAuthenticated(Boolean(currentUser));
+        // Ensure employees land on their personal dashboard after session restore
+        setActiveTab('dashboard');
+
+        // If restored user is still on default password, prompt them
+        if (currentUser?.passwordStatus === 'default') {
+          setShowChangePasswordModal(true);
+        }
+
+        const profileData = await api.getProfile();
+        setProfile(profileData || null);
+        if (profileData?.empId && normalizeRole(currentUser?.role) === 'EMPLOYEE') {
+          setSelectedAttendanceEmployeeId(profileData.empId);
+        }
+      } catch (error) {
+        clearAuthSession();
+        setAuthenticatedUser(null);
+        setProfile(null);
+        setIsAuthenticated(false);
+        setAuthError('Your session has expired. Please sign in again.');
+      }
+    };
+
+    restoreSession();
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
     fetchNotifications();
     fetchProfile();
-    fetchAuditLogs();
+
+    if (isHrAdmin) {
+      fetchDashboardMetrics();
+      fetchAuditLogs();
+    } else {
+      setDashboardMetrics(null);
+      setDashboardError(null);
+      setAuditLogs([]);
+      setAuditLogsError(null);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAuthenticated, isHrAdmin]);
 
   async function fetchProfile() {
     try {
       const data = await api.getProfile();
       setProfile(data || null);
+      const empIdFromProfile = data && (data.empId || data.EmpID || data.EmpId || data.empID);
+      if (empIdFromProfile && userRole === 'EMPLOYEE') {
+        setSelectedAttendanceEmployeeId(empIdFromProfile);
+      }
     } catch (err) {
       console.error('Failed to load profile:', err);
       setProfile(null);
@@ -164,9 +323,15 @@ export function App() {
 
   // Fetch employees from API
   useEffect(() => {
+    if (!isAuthenticated) return;
+    if (!canViewTeam) {
+      setEmployees([]);
+      setEmployeesError(null);
+      return;
+    }
     fetchEmployees();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAuthenticated, canViewTeam]);
 
   async function fetchEmployees(params = {}) {
     setEmployeesLoading(true);
@@ -175,6 +340,14 @@ export function App() {
       const resp = await api.getEmployees(params);
       const items = resp && resp.items ? resp.items : [];
       setEmployees(items);
+      // capture pagination metadata
+      const pagination = {
+        total: (resp && typeof resp.total === 'number') ? resp.total : 0,
+        page: (resp && typeof resp.page === 'number') ? resp.page : (params.page || 1),
+        size: (resp && typeof resp.size === 'number') ? resp.size : (params.size || 50),
+        pages: (resp && typeof resp.pages === 'number') ? resp.pages : (Math.ceil(((resp && resp.total) || 0) / (params.size || 50)))
+      };
+      setEmployeePagination(pagination);
     } catch (err) {
       console.error('Failed to load employees:', err);
       const message = err?.response?.data?.detail || err.message || 'Failed to load employees';
@@ -186,17 +359,103 @@ export function App() {
 
   // Fetch attendance from API (read-only integration)
   useEffect(() => {
+    if (!isAuthenticated) return;
     fetchAttendance();
+    fetchHolidays();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAuthenticated]);
+
+  // When selected employee changes, update punch state from existing attendance list
+  useEffect(() => {
+    updateAttendancePunchState(attendance, selectedAttendanceEmployeeId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAttendanceEmployeeId]);
+
+  // Fetch holidays for the current month
+  async function fetchHolidays() {
+    setHolidaysLoading(true);
+    setHolidaysError(null);
+    try {
+      const now = new Date();
+      const monthParam = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const resp = await api.getHolidays(monthParam);
+      const items = Array.isArray(resp) ? resp : [];
+      setHolidays(items);
+    } catch (err) {
+      console.error('Failed to load holidays:', err);
+      const message = err?.response?.data?.detail || err.message || 'Failed to load holidays';
+      setHolidaysError(message);
+      setHolidays([]);
+    } finally {
+      setHolidaysLoading(false);
+    }
+  }
+  // Helper: derive punch state from attendance list and selected employee
+  function updateAttendancePunchState(attList, empId) {
+    if (!empId) {
+      setIsCheckedIn(false);
+      setCurrentCheckInTime(null);
+      setAttendanceSessionCompleted(false);
+      setCurrentCheckOutTime(null);
+      return;
+    }
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const rec = (attList || []).find((r) => (r.empId || r.EmpID || r.EmpId) === empId && (r.date || r.Date) === todayStr);
+    if (!rec) {
+      setIsCheckedIn(false);
+      setCurrentCheckInTime(null);
+      setAttendanceSessionCompleted(false);
+      setCurrentCheckOutTime(null);
+      return;
+    }
+
+    // Normalize fields
+    const checkInVal = rec.checkIn || rec.CheckIn || null;
+    const checkOutVal = rec.checkOut || rec.CheckOut || null;
+
+    if (checkInVal && (!checkOutVal || checkOutVal === null)) {
+      // checked in but not yet checked out
+      setIsCheckedIn(true);
+      setCurrentCheckInTime(checkInVal);
+      setAttendanceSessionCompleted(false);
+      setCurrentCheckOutTime(null);
+    } else if (checkInVal && checkOutVal) {
+      // already checked out
+      setIsCheckedIn(false);
+      setCurrentCheckInTime(checkInVal);
+      setAttendanceSessionCompleted(true);
+      setCurrentCheckOutTime(checkOutVal);
+    } else {
+      setIsCheckedIn(false);
+      setCurrentCheckInTime(null);
+      setAttendanceSessionCompleted(false);
+      setCurrentCheckOutTime(null);
+    }
+  }
 
   async function fetchAttendance(params = {}) {
     setAttendanceLoading(true);
     setAttendanceError(null);
     try {
-      const resp = await api.getAttendance(params);
+      const finalParams = canViewTeam ? params : { ...params, empId: currentEmpId || selectedAttendanceEmployeeId };
+      const resp = await api.getAttendance(finalParams);
       const items = resp && resp.items ? resp.items : [];
-      setAttendance(items);
+      const pagination = {
+        total: (resp && typeof resp.total === 'number') ? resp.total : 0,
+        page: (resp && typeof resp.page === 'number') ? resp.page : (params.page || 1),
+        size: (resp && typeof resp.size === 'number') ? resp.size : (params.size || 50),
+        pages: (resp && typeof resp.pages === 'number') ? resp.pages : (Math.ceil(((resp && resp.total) || 0) / (params.size || 50)))
+      };
+      setAttendancePagination(pagination);
+
+      const visibleItems = canViewTeam ? items : (items || []).filter((r) => {
+        const rid = r?.empId || r?.EmpID || r?.EmpId || r?.employeeId || null;
+        return rid && String(rid) === String(currentEmpId || selectedAttendanceEmployeeId);
+      });
+      setAttendance(visibleItems);
+      // Update punch state for the currently selected employee based on fresh attendance data
+      updateAttendancePunchState(visibleItems, selectedAttendanceEmployeeId || currentEmpId);
     } catch (err) {
       console.error('Failed to load attendance:', err);
       const message = err?.response?.data?.detail || err.message || 'Failed to load attendance';
@@ -207,18 +466,24 @@ export function App() {
   }
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     fetchLeaves();
     fetchLeaveBalance();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAuthenticated]);
 
   async function fetchLeaves(params = {}) {
     setLeaveLoading(true);
     setLeaveError(null);
     try {
-      const resp = await api.getLeaves(params);
+      const finalParams = canViewTeam ? params : { ...params, empId: currentEmpId || selectedLeaveEmployeeId };
+      const resp = await api.getLeaves(finalParams);
       const items = Array.isArray(resp) ? resp : [];
-      setLeaves(items);
+      const visible = canViewTeam ? items : (items || []).filter((l) => {
+        const lid = l?.empId || l?.EmpID || l?.EmpId || l?.employeeId || null;
+        return lid && String(lid) === String(currentEmpId || selectedLeaveEmployeeId);
+      });
+      setLeaves(visible);
     } catch (err) {
       console.error('Failed to load leaves:', err);
       const message = err?.response?.data?.detail || err.message || 'Failed to load leaves';
@@ -245,9 +510,10 @@ export function App() {
   }
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     fetchShifts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAuthenticated]);
 
   async function fetchShifts(params = {}) {
     setShiftLoading(true);
@@ -266,9 +532,10 @@ export function App() {
   }
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     fetchTimesheets();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAuthenticated]);
 
   async function fetchTimesheets(params = {}) {
     setTimesheetsLoading(true);
@@ -287,17 +554,23 @@ export function App() {
   }
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     fetchPayroll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAuthenticated]);
 
   async function fetchPayroll(params = {}) {
     setPayrollLoading(true);
     setPayrollError(null);
     try {
-      const resp = await api.getPayroll(params);
+      const finalParams = canViewTeam ? params : { ...params, empId: currentEmpId };
+      const resp = await api.getPayroll(finalParams);
       const items = Array.isArray(resp) ? resp : [];
-      setPayroll(items);
+      const visible = canViewTeam ? items : (items || []).filter((p) => {
+        const pid = p?.empId || p?.EmpID || p?.EmpId || p?.employeeId || null;
+        return pid && String(pid) === String(currentEmpId);
+      });
+      setPayroll(visible);
     } catch (err) {
       console.error('Failed to load payroll:', err);
       const message = err?.response?.data?.detail || err.message || 'Failed to load payroll';
@@ -329,20 +602,74 @@ export function App() {
     }
   };
 
-  const handleCheckIn = async (method) => {
+  const requestCurrentLocation = () => new Promise((resolve, reject) => {
+    if (!navigator || !navigator.geolocation) {
+      reject(new Error('Location services are not available in this browser.'));
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        resolve({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
+      },
+      (error) => {
+        let message = 'Unable to determine your location.';
+        if (error.code === 1) {
+          message = 'Location permission is required to check in.';
+        } else if (error.code === 2) {
+          message = 'Location services are unavailable right now.';
+        } else if (error.code === 3) {
+          message = 'Location request timed out. Please try again.';
+        }
+        reject(new Error(message));
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
+      }
+    );
+  });
+
+  const handleCheckIn = async () => {
     if (!selectedAttendanceEmployeeId) {
       alert('Please select an employee before checking in.');
       return;
     }
 
     try {
-      await api.checkIn({ empId: selectedAttendanceEmployeeId });
-      const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      setIsCheckedIn(true);
-      setCurrentCheckInTime(time);
+      setGpsStatus({ state: 'requesting', message: 'Requesting location...', distance: null });
+      const coords = await requestCurrentLocation();
+      setGpsStatus({ state: 'verifying', message: 'Verifying location...', distance: null });
+
+      const record = await api.checkIn({
+        empId: selectedAttendanceEmployeeId,
+        ...coords,
+      });
+
+      const checkInVal = record?.checkIn || record?.CheckIn || null;
+      const distance = record?.distanceFromOffice ?? record?.DistanceFromOffice ?? null;
+      const geofenceStatus = record?.geofenceStatus || record?.GeofenceStatus || 'INSIDE';
+      if (checkInVal) {
+        setIsCheckedIn(true);
+        setCurrentCheckInTime(checkInVal);
+        setAttendanceSessionCompleted(false);
+        setCurrentCheckOutTime(null);
+      }
+      setGpsStatus({
+        state: 'success',
+        message: geofenceStatus === 'INSIDE'
+          ? `Attendance verified successfully${distance !== null ? ` • Distance from office: ${Math.round(distance)} m` : ''}.`
+          : 'Attendance verification failed.',
+        distance,
+      });
       await fetchAttendance();
     } catch (err) {
       const message = err?.response?.data?.detail || err.message || 'Failed to check in employee';
+      setGpsStatus({ state: 'error', message, distance: null });
       alert(message);
     }
   };
@@ -354,12 +681,33 @@ export function App() {
     }
 
     try {
-      await api.checkOut({ empId: selectedAttendanceEmployeeId });
-      setIsCheckedIn(false);
-      setCurrentCheckInTime(null);
+      let payload = { empId: selectedAttendanceEmployeeId };
+      if (navigator && navigator.geolocation) {
+        setGpsStatus({ state: 'requesting', message: 'Requesting location...', distance: null });
+        const coords = await requestCurrentLocation();
+        setGpsStatus({ state: 'verifying', message: 'Verifying location...', distance: null });
+        payload = { ...payload, ...coords };
+      }
+
+      const record = await api.checkOut(payload);
+      const checkOutVal = record?.checkOut || record?.CheckOut || null;
+      const checkInVal = record?.checkIn || record?.CheckIn || null;
+      const distance = record?.distanceFromOffice ?? record?.DistanceFromOffice ?? null;
+      if (checkOutVal) {
+        setIsCheckedIn(false);
+        setAttendanceSessionCompleted(true);
+        setCurrentCheckOutTime(checkOutVal);
+        setCurrentCheckInTime(checkInVal || null);
+      }
+      setGpsStatus({
+        state: 'success',
+        message: distance !== null ? `Location verified • Distance from office: ${Math.round(distance)} m` : 'Attendance checked out successfully.',
+        distance,
+      });
       await fetchAttendance();
     } catch (err) {
       const message = err?.response?.data?.detail || err.message || 'Failed to check out employee';
+      setGpsStatus({ state: 'error', message, distance: null });
       alert(message);
     }
   };
@@ -547,18 +895,26 @@ export function App() {
 
   const unreadNotificationsCount = notifications.filter((n) => !n.read).length;
 
+  if (!isAuthenticated) {
+    return <LoginPage onLogin={handleLogin} isLoading={authLoading} authError={authError} />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100">
       {/* Top Navigation */}
       <Navbar
         userRole={userRole}
-        setUserRole={handleRoleChange}
         onOpenAIChat={() => setIsAIChatOpen(true)}
         onToggleNotifications={() => setIsNotificationsOpen(!isNotificationsOpen)}
         unreadCount={unreadNotificationsCount}
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
-        currentEmpName={profile?.name || 'User'}
+        currentEmpName={currentEmpName}
+        currentEmpId={currentEmpId}
+        profile={profile}
+        onLogout={handleLogout}
+        onRequestChangePassword={() => setShowChangePasswordForm(true)}
+        onProfileUpdated={handleProfileUpdated}
       />
 
       <div className="flex">
@@ -566,12 +922,69 @@ export function App() {
         <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} userRole={userRole} />
 
         {/* Main Content Area */}
+        {/* Password lifecycle prompt/modal */}
+        {showChangePasswordModal && !showChangePasswordForm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="mx-auto w-full max-w-md rounded-lg bg-white p-6 shadow-lg">
+              <h3 className="mb-2 text-lg font-semibold">Your password is the default Employee ID password</h3>
+              <p className="mb-4 text-sm text-slate-500">Your account is currently using your Employee ID as the password. You may change it now or continue using the default password.</p>
+              <div className="flex justify-end gap-2">
+                <button onClick={() => { setShowChangePasswordModal(false); setShowChangePasswordForm(false); }} className="rounded-md bg-slate-100 px-3 py-1 text-sm text-slate-700">Keep Default</button>
+                <button onClick={() => setShowChangePasswordForm(true)} className="rounded-md bg-indigo-600 px-3 py-1 text-sm text-white">Change Password</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <ChangePasswordModal
+          show={showChangePasswordForm}
+          onClose={() => { setShowChangePasswordForm(false); setShowChangePasswordModal(false); }}
+          currentPasswordPrefill={lastLoginPassword}
+          onPasswordChanged={async () => {
+            clearAuthSession();
+            setAuthenticatedUser(null);
+            setProfile(null);
+            setIsAuthenticated(false);
+            setShowChangePasswordForm(false);
+            setShowChangePasswordModal(false);
+            setLastLoginPassword(null);
+            setAuthError('Your password has been changed successfully. Please sign in again with your new password.');
+            setActiveTab('dashboard');
+          }}
+        />
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
-          {activeTab === 'dashboard' && (
+          {activeTab === 'dashboard' && userRole === 'MANAGER' && (
+            <ManagerDashboard
+              employees={employees}
+              attendance={attendance}
+              leaves={leaves}
+              shifts={shifts}
+              timesheets={timesheets}
+              profile={profile}
+              managerEmpId={currentEmpId}
+              managerLoginId={authenticatedUser?.managerLoginId || profile?.managerLoginId || null}
+              userRole={userRole}
+              dashboardLoading={dashboardLoading}
+              dashboardError={dashboardError}
+              onNavigate={(tab) => setActiveTab(tab)}
+              onApproveLeave={handleApproveLeave}
+              onRejectLeave={handleRejectLeave}
+              onApproveShift={handleApproveShiftRequest}
+              onRejectShift={handleRejectShiftRequest}
+              onApproveTimesheet={handleApproveTimesheet}
+              onRejectTimesheet={handleRejectTimesheet}
+            />
+          )}
+
+          {activeTab === 'dashboard' && userRole !== 'MANAGER' && (
             <ExecutiveDashboard
               employees={employees}
               attendance={attendance}
               leaves={leaves}
+              leaveBalance={leaveBalance}
+              payroll={payroll}
+              shifts={shifts}
+              profile={profile}
               dashboardMetrics={dashboardMetrics}
               dashboardLoading={dashboardLoading}
               dashboardError={dashboardError}
@@ -586,6 +999,8 @@ export function App() {
               employees={employees}
               employeesLoading={employeesLoading}
               employeesError={employeesError}
+              employeePagination={employeePagination}
+              onRequestEmployees={fetchEmployees}
               onAddEmployee={handleAddEmployee}
               onUpdateEmployee={handleUpdateEmployee}
             />
@@ -596,6 +1011,7 @@ export function App() {
               attendanceRecords={attendance}
               attendanceLoading={attendanceLoading}
               attendanceError={attendanceError}
+              attendancePagination={attendancePagination}
               employees={employees}
               selectedEmployeeId={selectedAttendanceEmployeeId}
               onSelectEmployee={setSelectedAttendanceEmployeeId}
@@ -603,6 +1019,13 @@ export function App() {
               onCheckOut={handleCheckOut}
               isCheckedIn={isCheckedIn}
               currentCheckInTime={currentCheckInTime}
+              attendanceSessionCompleted={attendanceSessionCompleted}
+              currentCheckOutTime={currentCheckOutTime}
+              holidays={holidays}
+              holidaysLoading={holidaysLoading}
+              holidaysError={holidaysError}
+              userRole={userRole}
+              gpsStatus={gpsStatus}
             />
           )}
 
@@ -625,13 +1048,14 @@ export function App() {
           {activeTab === 'shifts' && (
             <ShiftManagement
               employees={employees}
-              selectedEmployeeId={selectedShiftEmployeeId}
+              selectedEmployeeId={selectedShiftEmployeeId || currentEmpId || ''}
               onSelectEmployee={setSelectedShiftEmployeeId}
               shifts={shifts}
               onRequestShift={handleRequestShift}
               onApproveShift={handleApproveShiftRequest}
               onRejectShift={handleRejectShiftRequest}
               userRole={userRole}
+              currentEmpId={currentEmpId}
             />
           )}
 
@@ -654,6 +1078,8 @@ export function App() {
               payrollRecords={payroll}
               payrollLoading={payrollLoading}
               payrollError={payrollError}
+              userRole={userRole}
+              currentEmpId={currentEmpId}
             />
           )}
 
@@ -729,7 +1155,7 @@ export function App() {
       </div>
 
       {/* Floating AI Chatbot Modal */}
-      <AIChatbotModal isOpen={isAIChatOpen} onClose={() => setIsAIChatOpen(false)} />
+      <AIChatbotModal isOpen={isAIChatOpen} onClose={() => setIsAIChatOpen(false)} userRole={userRole} currentEmpId={currentEmpId} />
 
       {/* Notifications Drawer */}
       <NotificationsDrawer

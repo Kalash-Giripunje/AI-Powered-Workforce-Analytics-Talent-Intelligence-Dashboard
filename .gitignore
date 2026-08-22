@@ -5,6 +5,7 @@
 .env
 .env.*
 !.env.example
+.env.local
 
 # =========================================================
 # NODE / REACT
@@ -69,7 +70,6 @@ backend_backup_before_mongodb/
 temp_*.json
 temp_*.csv
 temp_*.txt
-
 *.tmp
 *.temp
 
@@ -139,3 +139,13 @@ playwright-report/
 
 # Bun lockfile - project uses npm
 frontend/bun.lock
+
+# Remediation artifacts (do not commit)
+auth-temporary-credentials.txt
+**/auth-temporary-credentials.txt
+*.credentials
+*.credentials.txt
+*.secret
+*.secrets
+**/user_accounts_metadata_backup_*.json
+

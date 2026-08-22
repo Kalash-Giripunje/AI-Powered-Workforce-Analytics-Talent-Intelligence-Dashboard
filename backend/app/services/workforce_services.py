@@ -1,9 +1,11 @@
+import math
 import uuid
 import logging
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 
 from backend.app.database import get_database
+from backend.app.config import settings
 from backend.app.models.schemas import (
     EmployeeCreate,
     EmployeeUpdate,
@@ -71,6 +73,12 @@ def normalize_employee(doc: Dict[str, Any]) -> Dict[str, Any]:
 
     if "ManagerID" in d and "managerId" not in d:
         d["managerId"] = d["ManagerID"]
+    if "managerId" in d and "managerEmpId" not in d:
+        d["managerEmpId"] = d["managerId"]
+    if "ManagerID" in d and "managerEmpId" not in d:
+        d["managerEmpId"] = d["ManagerID"]
+    if "managerEmpId" in d and "managerId" not in d:
+        d["managerId"] = d["managerEmpId"]
 
     if "Location" in d and "location" not in d:
         d["location"] = d["Location"]
@@ -112,6 +120,14 @@ def normalize_employee(doc: Dict[str, Any]) -> Dict[str, Any]:
     elif "JobRole" in d and "designation" not in d:
         d["designation"] = d["JobRole"]
 
+    # Ensure skills is always represented as a list in API responses
+    # Convert null -> empty list, and coerce comma-separated strings into lists
+    skills_val = d.get("skills", None)
+    if skills_val is None:
+        d["skills"] = []
+    elif isinstance(skills_val, str):
+        d["skills"] = [s.strip() for s in skills_val.split(",") if s.strip()]
+
     return d
 
 
@@ -148,6 +164,17 @@ def normalize_attendance(
     if "LateArrival" in d:
         d["isAnomaly"] = bool(d["LateArrival"])
         d["anomalyReason"] = "Late arrival" if d["LateArrival"] else None
+
+    if "GPSVerified" in d and "gpsVerified" not in d:
+        d["gpsVerified"] = d["GPSVerified"]
+    if "DistanceFromOffice" in d and "distanceFromOffice" not in d:
+        d["distanceFromOffice"] = d["DistanceFromOffice"]
+    if "GeofenceStatus" in d and "geofenceStatus" not in d:
+        d["geofenceStatus"] = d["GeofenceStatus"]
+    if "Latitude" in d and "latitude" not in d:
+        d["latitude"] = d["Latitude"]
+    if "Longitude" in d and "longitude" not in d:
+        d["longitude"] = d["Longitude"]
 
     if employee:
         first_name = employee.get("firstName")
@@ -202,8 +229,30 @@ def normalize_leave(doc: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             d["days"] = None
 
-    if "id" not in d and "_id" in d:
-        d["id"] = str(d["_id"])
+    # Prefer RequestID as public id for leaves, otherwise fall back to MongoDB _id if present
+    if "id" not in d:
+        if d.get("RequestID"):
+            d["id"] = str(d.get("RequestID"))
+        elif d.get("_id"):
+            d["id"] = str(d.get("_id"))
+
+    # Map Reason (DB) -> reason (API)
+    if "reason" not in d and d.get("Reason") is not None:
+        d["reason"] = d.get("Reason")
+
+    # AppliedOn / AppliedDate -> appliedOn (prefer AppliedOn)
+    if "appliedOn" not in d:
+        applied_on = d.get("AppliedOn") or d.get("AppliedDate")
+        if applied_on:
+            d["appliedOn"] = applied_on
+
+    # Expose appliedDate explicitly when present
+    if "appliedDate" not in d and d.get("AppliedDate") is not None:
+        d["appliedDate"] = d.get("AppliedDate")
+
+    # ManagerComments -> approverComments
+    if "approverComments" not in d and d.get("ManagerComments") is not None:
+        d["approverComments"] = d.get("ManagerComments")
 
     return d
 
@@ -235,20 +284,43 @@ def normalize_shift(
 
     if "ShiftDate" in d and "requestedDate" not in d:
         d["requestedDate"] = d["ShiftDate"]
+    if "RequestedDate" in d and "requestedDate" not in d:
+        d["requestedDate"] = d["RequestedDate"]
 
-    if "ShiftSwapStatus" in d and "status" not in d:
-        d["status"] = d["ShiftSwapStatus"]
-    elif "ShiftSwapApproved" in d and "status" not in d:
-        d["status"] = "Approved" if d["ShiftSwapApproved"] else "Pending"
+    if "status" not in d:
+        raw_status = d.get("ShiftSwapStatus")
+        if raw_status is not None:
+            val = str(raw_status).strip().title()
+            if val in ShiftService.VALID_STATUSES:
+                d["status"] = val
+            else:
+                d["status"] = val
+        elif "ShiftSwapApproved" in d:
+            d["status"] = "Approved" if d["ShiftSwapApproved"] else "Pending"
 
-    if "Reason" in d and "reason" not in d:
-        d["reason"] = d["Reason"]
+    reason_aliases = ["Reason", "RequestReason", "ShiftReason", "EmployeeReason", "Comments", "Remarks"]
+    for alias in reason_aliases:
+        if alias in d and "reason" not in d and d.get(alias) is not None:
+            d["reason"] = d[alias]
+            break
 
     if "AppliedOn" in d and "appliedOn" not in d:
         d["appliedOn"] = d["AppliedOn"]
 
     if "ShiftID" in d and "id" not in d:
         d["id"] = d["ShiftID"]
+    if "RequestID" in d and "id" not in d:
+        d["id"] = d["RequestID"]
+
+    if "ManagerComments" in d and "approverComments" not in d:
+        d["approverComments"] = d["ManagerComments"]
+    if "ApproverComments" in d and "approverComments" not in d:
+        d["approverComments"] = d["ApproverComments"]
+
+    if "Approver" in d and "approverName" not in d:
+        d["approverName"] = d["Approver"]
+    if "Manager" in d and "approverName" not in d:
+        d["approverName"] = d["Manager"]
 
     if employee:
         first_name = employee.get("firstName")
@@ -266,6 +338,8 @@ def normalize_shift(
             d["requestedShift"] = f"{d['shiftName']} ({start} - {end})".strip()
         else:
             d["requestedShift"] = d["shiftName"]
+    if "RequestedShift" in d and "requestedShift" not in d:
+        d["requestedShift"] = d["RequestedShift"]
 
     return d
 
@@ -410,6 +484,8 @@ def normalize_notification(doc: Dict[str, Any]) -> Dict[str, Any]:
 
     if "id" not in d and "_id" in d:
         d["id"] = str(d["_id"])
+        # Avoid leaking the raw MongoDB _id in the API response — normalize to 'id' only
+        d.pop("_id", None)
 
     return d
 
@@ -420,17 +496,72 @@ def normalize_audit_log(doc: Dict[str, Any]) -> Dict[str, Any]:
 
     d = dict(doc)
 
+    # Backwards-compat: older audit records may use userId/userRole
+    # while newer ones use actor. Synthesize a readable actor string.
     if "userId" in d and "actor" not in d:
         role = d.get("userRole", "User")
         d["actor"] = f"{d['userId']} ({role})"
 
-    if "id" not in d and "_id" in d:
-        d["id"] = str(d["_id"])
+    # Ensure a stable API-facing id exists and is usable.
+    # Accept an explicit 'id' only when it contains a meaningful value
+    # (non-null, non-empty string). If the id is missing/None/empty,
+    # fall back to the MongoDB _id for stability. After deriving the
+    # public id, remove the raw MongoDB _id to avoid leaking internal
+    # identifiers. Only generate a random fallback id when neither an
+    # explicit id nor a MongoDB _id exists (rare legacy case).
+
+    raw_id = d.get("id") if "id" in d else None
+    usable_id = None
+    if raw_id is not None:
+        # Treat non-empty strings as usable; other falsy values are not usable
+        if isinstance(raw_id, str):
+            if raw_id.strip() != "":
+                usable_id = raw_id.strip()
+        else:
+            # Non-string but present (e.g., numeric) — convert to string
+            usable_id = str(raw_id)
+
+    if usable_id:
+        d["id"] = usable_id
+        # Remove internal _id if present to avoid leaking it
+        d.pop("_id", None)
+    else:
+        # id missing or null/empty — prefer stable MongoDB _id when available
+        if "_id" in d and d.get("_id") is not None:
+            d["id"] = str(d["_id"])
+            d.pop("_id", None)
+        else:
+            # Very rare legacy record without any identifier: synthesize a short stable id
+            d["id"] = f"AUD-{uuid.uuid4().hex[:6].upper()}"
 
     return d
 
-def normalize_ai_prediction(
-    doc: Dict[str, Any]
+
+async def log_export_audit(
+    actor: str,
+    action: str,
+    scope: str,
+    export_format: str,
+    record_count: int,
+    ip_address: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Persist a minimal audit record for exports without storing any payroll contents."""
+    from backend.app.models.schemas import AuditLogCreate
+
+    audit_action = (
+        f"{action} scope={scope} format={export_format} count={record_count}"
+    )
+    log = AuditLogCreate(
+        actor=actor,
+        action=audit_action,
+        module="Exports",
+        ipAddress=ip_address or "unknown",
+        status="SUCCESS",
+    )
+    return await AuditService.create(log)
+
+
+def normalize_ai_prediction(    doc: Dict[str, Any]
 ) -> Dict[str, Any]:
 
     if not doc:
@@ -491,7 +622,29 @@ def normalize_ai_prediction(
 # 1. Employee Service
 # ==========================================================================
 
+class MissingEmployeeCounterError(RuntimeError):
+    """Raised when the counters.employee_id document is missing.
+
+    This is a specific subclass so callers can distinguish an uninitialized
+    employee counter from other RuntimeError conditions (like DB connection).
+    """
+
+
 class EmployeeService:
+    @staticmethod
+    async def count_total() -> int:
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+        return await db.employees.count_documents({})
+
+    @staticmethod
+    async def count_active() -> int:
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+        return await db.employees.count_documents({"EmploymentStatus": {"$regex": r"^active$", "$options": "i"}})
+
 
     # MongoDB field names -> API field names
     SORT_FIELD_MAP = {
@@ -544,7 +697,9 @@ class EmployeeService:
         sort_by: str = "empId",
         sort_order: str = "asc",
         page: int = 1,
-        size: int = 50
+        size: int = 50,
+        emp_id: Optional[str] = None,
+        emp_ids: Optional[List[str]] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
 
         db = get_database()
@@ -579,6 +734,11 @@ class EmployeeService:
                 "$regex": f"^{status}$",
                 "$options": "i"
             }
+
+        if emp_ids:
+            query["EmpID"] = {"$in": [str(item).strip() for item in emp_ids if str(item).strip()]}
+        elif emp_id and str(emp_id).strip():
+            query["EmpID"] = str(emp_id).strip()
 
         # ---------------------------------------------------------
         # Search
@@ -680,6 +840,89 @@ class EmployeeService:
             for item in items
         ]
 
+        # ---------------------------------------------------------
+        # Batch enrichment: performance, AI predictions, payroll
+        # Use a single batched query per related collection to avoid N+1
+        # ---------------------------------------------------------
+        emp_ids = [e.get('empId') for e in normalized_items if e.get('empId')]
+        if emp_ids:
+            try:
+                # Performance documents for these employees
+                perf_docs = await db.performance.find({"EmpID": {"$in": emp_ids}}, {"_id": 0}).to_list(length=len(emp_ids))
+                perf_raw_map = {d.get('EmpID'): d for d in perf_docs if d and d.get('EmpID')}
+                perf_norm_map = {normalize_performance(d).get('empId'): normalize_performance(d) for d in perf_docs if d}
+
+                # AI prediction documents
+                ai_docs = await db.ai_predictions.find({"EmpID": {"$in": emp_ids}}, {"_id": 0}).to_list(length=len(emp_ids))
+                ai_norm_map = {normalize_ai_prediction(d).get('empId'): normalize_ai_prediction(d) for d in ai_docs if d}
+
+                # Payroll documents: fetch recent entries and pick the latest per employee
+                payroll_docs = await db.payroll.find({"EmpID": {"$in": emp_ids}}, {"_id": 0}).to_list(length=max(50, len(emp_ids)*3))
+                payroll_map = {}
+                for doc in payroll_docs:
+                    if not doc:
+                        continue
+                    empid = doc.get('EmpID')
+                    norm = normalize_payroll(doc)
+                    if empid in payroll_map:
+                        # choose latest by month string (expects YYYY-MM or lexicographically comparable)
+                        existing_month = payroll_map[empid].get('month') or ''
+                        this_month = norm.get('month') or ''
+                        if this_month and this_month > existing_month:
+                            payroll_map[empid] = norm
+                    else:
+                        payroll_map[empid] = norm
+
+                # Merge normalized related fields into employee responses
+                for emp in normalized_items:
+                    eid = emp.get('empId')
+                    if not eid:
+                        continue
+
+                    # Performance
+                    pnorm = perf_norm_map.get(eid)
+                    praw = perf_raw_map.get(eid)
+                    if pnorm:
+                        for key in [
+                            'performanceScore',
+                            'productivityScore',
+                            'kpiCompletionRate',
+                            'performanceRating',
+                            'reviewDate'
+                        ]:
+                            if key in pnorm:
+                                emp[key] = pnorm.get(key)
+
+                        # goalsCompleted/totalGoals come from raw document fields when present
+                        if praw and praw.get('GoalCompletion') is not None:
+                            emp['goalsCompleted'] = praw.get('GoalCompletion')
+                        if praw and praw.get('TotalGoals') is not None:
+                            emp['totalGoals'] = praw.get('TotalGoals')
+                        else:
+                            emp.setdefault('totalGoals', None)
+
+                        if 'promotionRecommended' in pnorm:
+                            emp['promotionRecommended'] = pnorm.get('promotionRecommended')
+
+                    # AI prediction
+                    a = ai_norm_map.get(eid)
+                    if a:
+                        if a.get('recommendation'):
+                            emp['aiFeedback'] = a.get('recommendation')
+                        if a.get('attritionRisk') is not None:
+                            emp['attritionRisk'] = a.get('attritionRisk')
+
+                    # Payroll (latest)
+                    pay = payroll_map.get(eid)
+                    if pay:
+                        if 'month' in pay:
+                            emp['lastPayrollMonth'] = pay.get('month')
+                        if 'netPay' in pay:
+                            emp['lastNetPay'] = pay.get('netPay')
+
+            except Exception as _e:
+                logger.warning(f"Failed to batch-enrich employees: {_e}")
+
         return normalized_items, total
 
     # ----------------------------------------------------------------------
@@ -719,6 +962,8 @@ class EmployeeService:
         data: EmployeeCreate
     ) -> Dict[str, Any]:
 
+        from pymongo.errors import DuplicateKeyError
+
         db = get_database()
 
         if db is None:
@@ -727,15 +972,47 @@ class EmployeeService:
             )
 
         # ---------------------------------------------------------
+        # Determine EmpID: use client-supplied if present, else
+        # generate server-side using counters.employee_id.
+        # Note: upsert is intentionally False to avoid creating
+        # the counter document automatically. The deployment
+        # operator should initialize counters.employee_id to
+        # the current max (e.g., seq=10000) before enabling generation.
+        # ---------------------------------------------------------
+
+        emp_id = getattr(data, 'empId', None)
+
+        if not emp_id:
+            # Attempt to atomically get the next sequence without upsert
+            from pymongo import ReturnDocument
+
+            counter = await db.counters.find_one_and_update(
+                {"_id": "employee_id"},
+                {"$inc": {"seq": 1}},
+                upsert=False,
+                return_document=ReturnDocument.AFTER
+            )
+
+            if not counter or 'seq' not in counter:
+                # Raise a specific exception so the router can return 503
+                raise MissingEmployeeCounterError(
+                    "Employee ID counter is not initialized. "
+                    "Please initialize counters.employee_id with the current sequence before enabling server-side EmpID generation."
+                )
+
+            sequence = counter['seq']
+            emp_id = f"EMP{sequence:06d}"
+
+        # ---------------------------------------------------------
         # Convert API format -> MongoDB format
         # ---------------------------------------------------------
 
         doc = {
-            "EmpID": data.empId,
+            "EmpID": emp_id,
             "EmployeeName": (
                 f"{data.firstName} {data.lastName}"
             ).strip(),
-            "Email": str(data.email),
+            "Email": str(data.email) if data.email is not None else None,
             "Phone": data.phone,
             "Age": data.age,
             "Gender": data.gender,
@@ -766,12 +1043,13 @@ class EmployeeService:
         }
 
         # ---------------------------------------------------------
-        # Insert into MongoDB
+        # Insert into MongoDB with explicit DuplicateKeyError handling
         # ---------------------------------------------------------
-
-        await db.employees.insert_one(
-            doc
-        )
+        try:
+            await db.employees.insert_one(doc)
+        except DuplicateKeyError as exc:
+            # Do not overwrite existing employees; surface a clear error
+            raise ValueError(f"Employee ID '{emp_id}' already exists.") from exc
 
         # ---------------------------------------------------------
         # Return API format
@@ -960,13 +1238,25 @@ class EmployeeService:
 # ==========================================================================
 
 class AttendanceService:
+    @staticmethod
+    async def count_total_and_present() -> (int, int):
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+        total = await db.attendance.count_documents({})
+        present = await db.attendance.count_documents({"AttendanceStatus": {"$regex": r"^present$", "$options": "i"}})
+        return total, present
+
 
     @staticmethod
     async def get_all(
         department: Optional[str] = None,
         status: Optional[str] = None,
         page: int = 1,
-        size: int = 50
+        size: int = 50,
+        employee_emp_id: Optional[str] = None,
+        employee_emp_ids: Optional[List[str]] = None,
+        date: Optional[str] = None
     ) -> Tuple[List[Dict[str, Any]], int]:
 
         db = get_database()
@@ -977,134 +1267,119 @@ class AttendanceService:
             )
 
         # ---------------------------------------------------------
-        # Build MongoDB query
+        # Build employee query (we page employees, then merge attendance)
         # ---------------------------------------------------------
+        employee_query: Dict[str, Any] = {}
 
-        query: Dict[str, Any] = {}
+        # If employee_emp_id or employee_emp_ids is provided, restrict results to those employee records
+        if employee_emp_ids:
+            employee_query["EmpID"] = {"$in": [str(item).strip() for item in employee_emp_ids if str(item).strip()]}
+        elif employee_emp_id:
+            employee_query["EmpID"] = employee_emp_id
 
-        # ---------------------------------------------------------
-        # Status filter
-        #
-        # API:
-        # status
-        #
-        # MongoDB:
-        # AttendanceStatus
-        # ---------------------------------------------------------
-
-        if status and status.lower() != "all":
-
-            query["AttendanceStatus"] = {
-                "$regex": f"^{status}$",
+        # Department filter applies to employee collection
+        if department and department.lower() != "all":
+            employee_query["Department"] = {
+                "$regex": f"^{department}$",
                 "$options": "i"
             }
 
         # ---------------------------------------------------------
-        # Department filter
-        #
-        # Attendance collection does not contain Department.
-        #
-        # Therefore:
-        # 1. Find employees belonging to the department.
-        # 2. Extract their EmpID values.
-        # 3. Filter attendance using those EmpID values.
+        # Total employees matching the employee-level filters
         # ---------------------------------------------------------
+        total_employees = await db.employees.count_documents(employee_query)
 
-        if department and department.lower() != "all":
-
-            employee_cursor = db.employees.find(
-                {
-                    "Department": {
-                        "$regex": f"^{department}$",
-                        "$options": "i"
-                    }
-                },
-                {
-                    "_id": 0,
-                    "EmpID": 1
-                }
-            )
-
-            employee_documents = await employee_cursor.to_list(
-                length=None
-            )
-
-            employee_ids = [
-                employee["EmpID"]
-                for employee in employee_documents
-                if employee.get("EmpID")
-            ]
-
-            # No employees found in requested department
-            if not employee_ids:
-                return [], 0
-
-            query["EmpID"] = {
-                "$in": employee_ids
-            }
-
-        # ---------------------------------------------------------
-        # Count matching attendance records
-        # ---------------------------------------------------------
-
-        total = await db.attendance.count_documents(
-            query
-        )
-
-        # ---------------------------------------------------------
-        # Pagination
-        # ---------------------------------------------------------
-
+        # Pagination for employee page
         skip = (page - 1) * size
 
-        cursor = (
-            db.attendance
-            .find(
-                query,
-                {"_id": 0}
-            )
-            .skip(skip)
-            .limit(size)
-        )
+        employee_cursor = db.employees.find(
+            employee_query,
+            {"_id": 0}
+        ).skip(skip).limit(size)
 
-        items = await cursor.to_list(
-            length=size
-        )
+        employee_docs = await employee_cursor.to_list(length=size)
 
-        # ---------------------------------------------------------
-        # Normalize and enrich employee information
-        # ---------------------------------------------------------
+        # No employees on this page
+        if not employee_docs:
+            return [], total_employees
 
-        employee_ids = {
-            item.get("EmpID")
-            for item in items
-            if item.get("EmpID")
-        }
-
+        # Build normalized employee lookup for enrichment
         employee_lookup: Dict[str, Dict[str, Any]] = {}
-        if employee_ids:
-            employee_cursor = db.employees.find(
-                {"EmpID": {"$in": list(employee_ids)}},
-                {"_id": 0}
-            )
-            employee_documents = await employee_cursor.to_list(length=None)
-            for employee_document in employee_documents:
-                employee_id = employee_document.get("EmpID")
-                if employee_id:
-                    employee_lookup[employee_id] = normalize_employee(employee_document)
+        emp_ids: List[str] = []
+        for emp in employee_docs:
+            emp_id = emp.get("EmpID")
+            if emp_id:
+                employee_lookup[emp_id] = normalize_employee(emp)
+                emp_ids.append(emp_id)
 
-        normalized_items = []
+        # ---------------------------------------------------------
+        # Fetch attendance records for this employee page and requested date
+        # ---------------------------------------------------------
+        attendance_query: Dict[str, Any] = {"EmpID": {"$in": emp_ids}}
 
-        for item in items:
-            emp_id = item.get("EmpID")
-            normalized_items.append(
-                normalize_attendance(
-                    item,
-                    employee_lookup.get(emp_id)
-                )
-            )
+        if date:
+            attendance_query["Date"] = date
 
-        return normalized_items, total
+        # For non-Absence status filters, constrain attendance query to reduce data
+        if status and status.lower() != "all":
+            if status.lower() != "absent":
+                attendance_query["AttendanceStatus"] = {
+                    "$regex": f"^{status}$",
+                    "$options": "i"
+                }
+            # If status == 'absent', do not add AttendanceStatus filter because absence is lack of attendance record
+
+        cursor = db.attendance.find(attendance_query, {"_id": 0})
+        attendance_documents = await cursor.to_list(length=None)
+
+        attendance_lookup: Dict[str, Dict[str, Any]] = {}
+        for a in attendance_documents:
+            aid = a.get("EmpID")
+            if aid:
+                attendance_lookup[aid] = a
+
+        # ---------------------------------------------------------
+        # Merge: for each employee in requested page, produce an attendance-like record
+        # ---------------------------------------------------------
+        merged_items: List[Dict[str, Any]] = []
+
+        # Determine default date string for absent synthetic entries
+        if date:
+            target_date = date
+        else:
+            # use UTC date string to be consistent with service conventions
+            target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        for emp in employee_docs:
+            eid = emp.get("EmpID")
+            emp_norm = employee_lookup.get(eid)
+            att_doc = attendance_lookup.get(eid)
+            if att_doc:
+                merged_items.append(normalize_attendance(att_doc, emp_norm))
+            else:
+                # Synthesize a read-only absent representation (do not persist to DB)
+                synthetic = {
+                    "EmpID": eid,
+                    "Date": target_date,
+                    "CheckIn": None,
+                    "CheckOut": None,
+                    "WorkingHours": 0,
+                    "AttendanceStatus": "Absent",
+                }
+                merged_items.append(normalize_attendance(synthetic, emp_norm))
+
+        # ---------------------------------------------------------
+        # Apply status filter on merged items (if requested)
+        # ---------------------------------------------------------
+        if status and status.lower() != "all":
+            filtered = []
+            for item in merged_items:
+                item_status = (item.get("status") or item.get("AttendanceStatus") or "").strip()
+                if item_status.lower() == status.lower():
+                    filtered.append(item)
+            merged_items = filtered
+
+        return merged_items, total_employees
 
     # ----------------------------------------------------------------------
     # GET ATTENDANCE ANOMALIES
@@ -1201,6 +1476,72 @@ class AttendanceService:
             return False
 
     @staticmethod
+    def _calculate_gps_distance_meters(latitude_a: float, longitude_a: float, latitude_b: float, longitude_b: float) -> float:
+        radius_km = 6371.0
+        lat_a = math.radians(latitude_a)
+        lon_a = math.radians(longitude_a)
+        lat_b = math.radians(latitude_b)
+        lon_b = math.radians(longitude_b)
+
+        delta_lat = lat_b - lat_a
+        delta_lon = lon_b - lon_a
+        a = (
+            math.sin(delta_lat / 2) ** 2
+            + math.cos(lat_a) * math.cos(lat_b) * math.sin(delta_lon / 2) ** 2
+        )
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        return radius_km * c * 1000.0
+
+    @staticmethod
+    def _resolve_office_geofence() -> Tuple[float, float, float]:
+        office_latitude = float(getattr(settings, "OFFICE_LATITUDE", 0.0) or 0.0)
+        office_longitude = float(getattr(settings, "OFFICE_LONGITUDE", 0.0) or 0.0)
+        radius_meters = float(getattr(settings, "OFFICE_GEOFENCE_RADIUS_METERS", 200.0) or 200.0)
+        return office_latitude, office_longitude, radius_meters
+
+    @staticmethod
+    def _verify_gps_payload(latitude: Optional[float], longitude: Optional[float], *, require_location: bool) -> Dict[str, Any]:
+        if latitude is None or longitude is None:
+            if require_location:
+                raise ValueError("Location permission is required to check in.")
+            return {
+                "gpsVerified": None,
+                "distanceFromOffice": None,
+                "geofenceStatus": None,
+                "latitude": None,
+                "longitude": None,
+            }
+
+        try:
+            lat_value = float(latitude)
+            lon_value = float(longitude)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid latitude or longitude provided.") from exc
+
+        if not (-90 <= lat_value <= 90):
+            raise ValueError("Latitude must be between -90 and 90 degrees.")
+        if not (-180 <= lon_value <= 180):
+            raise ValueError("Longitude must be between -180 and 180 degrees.")
+
+        office_latitude, office_longitude, radius_meters = AttendanceService._resolve_office_geofence()
+        distance = AttendanceService._calculate_gps_distance_meters(
+            lat_value,
+            lon_value,
+            office_latitude,
+            office_longitude,
+        )
+
+        gps_verified = distance <= max(radius_meters, 0.0)
+        status = "INSIDE" if gps_verified else "OUTSIDE"
+        return {
+            "gpsVerified": gps_verified,
+            "distanceFromOffice": round(distance, 2),
+            "geofenceStatus": status,
+            "latitude": lat_value,
+            "longitude": lon_value,
+        }
+
+    @staticmethod
     async def check_in(
         payload: AttendanceCheckIn
     ) -> Dict[str, Any]:
@@ -1244,6 +1585,14 @@ class AttendanceService:
         except ValueError as exc:
             raise ValueError("Invalid check-in time supplied.") from exc
 
+        gps_info = AttendanceService._verify_gps_payload(
+            payload.latitude,
+            payload.longitude,
+            require_location=True,
+        )
+        if not gps_info["gpsVerified"]:
+            raise ValueError("You are outside the permitted attendance area.")
+
         existing = await db.attendance.find_one(
             {
                 "EmpID": payload.empId,
@@ -1265,6 +1614,11 @@ class AttendanceService:
                 "LateArrival": late_arrival,
                 "CheckOut": None,
                 "WorkingHours": 0.0,
+                "GPSVerified": True,
+                "Latitude": gps_info["latitude"],
+                "Longitude": gps_info["longitude"],
+                "DistanceFromOffice": gps_info["distanceFromOffice"],
+                "GeofenceStatus": gps_info["geofenceStatus"],
             }
             await db.attendance.update_one(
                 {"_id": existing["_id"]},
@@ -1282,6 +1636,11 @@ class AttendanceService:
             "WorkingHours": 0.0,
             "AttendanceStatus": "Late" if late_arrival else "Present",
             "LateArrival": late_arrival,
+            "GPSVerified": True,
+            "Latitude": gps_info["latitude"],
+            "Longitude": gps_info["longitude"],
+            "DistanceFromOffice": gps_info["distanceFromOffice"],
+            "GeofenceStatus": gps_info["geofenceStatus"],
         }
 
         await db.attendance.insert_one(record)
@@ -1375,17 +1734,40 @@ class AttendanceService:
         late_arrival = AttendanceService._is_late_checkin(in_time_value)
         attendance_status = "Late" if late_arrival else "Present"
 
+        gps_update = {}
+        if payload.latitude is not None or payload.longitude is not None:
+            gps_info = AttendanceService._verify_gps_payload(
+                payload.latitude,
+                payload.longitude,
+                require_location=False,
+            )
+            if gps_info["gpsVerified"] is False:
+                gps_update["GPSVerified"] = False
+                gps_update["GeofenceStatus"] = "OUTSIDE"
+                gps_update["DistanceFromOffice"] = gps_info["distanceFromOffice"]
+                gps_update["Latitude"] = gps_info["latitude"]
+                gps_update["Longitude"] = gps_info["longitude"]
+            elif gps_info["gpsVerified"] is True:
+                gps_update["GPSVerified"] = True
+                gps_update["GeofenceStatus"] = "INSIDE"
+                gps_update["DistanceFromOffice"] = gps_info["distanceFromOffice"]
+                gps_update["Latitude"] = gps_info["latitude"]
+                gps_update["Longitude"] = gps_info["longitude"]
+
+        update_payload = {
+            "CheckOut": time_str,
+            "WorkingHours": working_hours,
+            "AttendanceStatus": attendance_status,
+            "LateArrival": late_arrival,
+            **gps_update,
+        }
+
         updated_record = await db.attendance.find_one_and_update(
             {
                 "_id": record["_id"]
             },
             {
-                "$set": {
-                    "CheckOut": time_str,
-                    "WorkingHours": working_hours,
-                    "AttendanceStatus": attendance_status,
-                    "LateArrival": late_arrival,
-                }
+                "$set": update_payload
             },
             return_document=True,
             projection={
@@ -1405,9 +1787,81 @@ class AttendanceService:
 
 class LeaveService:
 
+    VALID_STATUSES = {"Pending", "Approved", "Rejected"}
+
+    @staticmethod
+    def _normalize_status(raw_status: Optional[str]) -> str:
+        if raw_status is None:
+            return "Pending"
+        value = str(raw_status).strip()
+        if not value:
+            return "Pending"
+        normalized = value.title()
+        if normalized not in LeaveService.VALID_STATUSES:
+            raise ValueError("Leave status must be one of: Pending, Approved, Rejected.")
+        return normalized
+
+    @staticmethod
+    async def _has_overlapping_leave(
+        emp_id: str,
+        start_date: str,
+        end_date: str,
+        exclude_leave_id: Optional[str] = None
+    ) -> bool:
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+
+        try:
+            start = datetime.strptime(str(start_date), "%Y-%m-%d")
+            end = datetime.strptime(str(end_date), "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("Invalid leave date provided.") from exc
+
+        if end < start:
+            raise ValueError("Leave end date cannot be earlier than the start date.")
+
+        query: Dict[str, Any] = {"EmpID": emp_id}
+        if exclude_leave_id:
+            try:
+                from bson import ObjectId
+                query["_id"] = {"$ne": ObjectId(exclude_leave_id)}
+            except Exception:
+                query["id"] = {"$ne": exclude_leave_id}
+
+        items = await db.leaves.find(query, {"_id": 0}).to_list(length=5000)
+        for item in items:
+            existing_status = str(item.get("Status") or "").strip()
+            if existing_status.lower() == "rejected":
+                continue
+            existing_start = item.get("StartDate")
+            existing_end = item.get("EndDate")
+            if not existing_start or not existing_end:
+                continue
+            try:
+                existing_start_dt = datetime.strptime(str(existing_start), "%Y-%m-%d")
+                existing_end_dt = datetime.strptime(str(existing_end), "%Y-%m-%d")
+            except ValueError:
+                continue
+            if start <= existing_end_dt and end >= existing_start_dt:
+                return True
+        return False
+
+    @staticmethod
+    async def count_pending() -> int:
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+        return await db.leaves.count_documents({"Status": {"$regex": r"^pending$", "$options": "i"}})
+
+
     @staticmethod
     async def get_all(
-        status: Optional[str] = None
+        status: Optional[str] = None,
+        page: int = 1,
+        size: int = 50,
+        emp_id: Optional[str] = None,
+        emp_ids: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
 
         db = get_database()
@@ -1423,6 +1877,11 @@ class LeaveService:
 
         query: Dict[str, Any] = {}
 
+        if emp_ids:
+            query["EmpID"] = {"$in": [str(item).strip() for item in emp_ids if str(item).strip()]}
+        elif emp_id and str(emp_id).strip():
+            query["EmpID"] = str(emp_id).strip()
+
         if status and status.lower() != "all":
             query["Status"] = {
                 "$regex": f"^{status}$",
@@ -1430,16 +1889,17 @@ class LeaveService:
             }
 
         # ---------------------------------------------------------
-        # Get leave records
+        # Pagination
         # ---------------------------------------------------------
+        skip = (page - 1) * size
 
         cursor = db.leaves.find(
             query,
             {"_id": 0}
-        )
+        ).skip(skip).limit(size)
 
         items = await cursor.to_list(
-            length=None
+            length=size
         )
 
         # ---------------------------------------------------------
@@ -1466,22 +1926,42 @@ class LeaveService:
         if not request.empId or not str(request.empId).strip():
             raise ValueError("Invalid employee ID.")
 
+        if request.status is not None and str(request.status).strip():
+            normalized_status = LeaveService._normalize_status(request.status)
+            if normalized_status != "Pending":
+                raise ValueError("Leave status is HR-controlled. Employees can only submit Pending leave requests.")
+
+        if not request.startDate or not str(request.startDate).strip():
+            raise ValueError("Leave start date is required.")
+        if not request.endDate or not str(request.endDate).strip():
+            raise ValueError("Leave end date is required.")
+
+        try:
+            start = datetime.strptime(str(request.startDate), "%Y-%m-%d")
+            end = datetime.strptime(str(request.endDate), "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("Leave dates must use YYYY-MM-DD format.") from exc
+
+        if end < start:
+            raise ValueError("Leave end date cannot be earlier than the start date.")
+
+        days = (end - start).days + 1
+        if days <= 0:
+            raise ValueError("Leave duration must be at least one day.")
+
+        if await LeaveService._has_overlapping_leave(str(request.empId).strip(), str(request.startDate), str(request.endDate)):
+            raise ValueError("This leave request overlaps with another leave period for the same employee.")
+
         data = {
-            "EmpID": request.empId,
+            "EmpID": str(request.empId).strip(),
             "LeaveType": request.leaveType,
             "StartDate": request.startDate,
             "EndDate": request.endDate,
-            "Status": request.status or "Pending",
-            "LeaveBalance": request.leaveBalance
+            "Status": "Pending",
+            "LeaveBalance": request.leaveBalance,
+            "days": days,
+            "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
-
-        if request.leaveType and request.startDate and request.endDate:
-            try:
-                start = datetime.strptime(str(request.startDate), "%Y-%m-%d")
-                end = datetime.strptime(str(request.endDate), "%Y-%m-%d")
-                data["days"] = max(0, (end - start).days + 1)
-            except ValueError:
-                pass
 
         await db.leaves.insert_one(data)
 
@@ -1500,6 +1980,7 @@ class LeaveService:
                 "MongoDB database is not connected."
             )
 
+        normalized_status = LeaveService._normalize_status(update.status)
         query: Dict[str, Any] = {"_id": leave_id}
         try:
             from bson import ObjectId
@@ -1511,7 +1992,7 @@ class LeaveService:
             query,
             {
                 "$set": {
-                    "Status": update.status
+                    "Status": normalized_status
                 }
             },
             return_document=True
@@ -1529,13 +2010,39 @@ class LeaveService:
 
 class ShiftService:
 
+    VALID_STATUSES = {"Pending", "Approved", "Rejected", "Not Requested"}
+
+    @staticmethod
+    def _normalize_status(raw_status: Optional[str]) -> str:
+        if raw_status is None:
+            return "Pending"
+        value = str(raw_status).strip()
+        if not value:
+            return "Pending"
+        normalized = value.title()
+        if normalized not in ShiftService.VALID_STATUSES:
+            raise ValueError("Shift status must be one of: Pending, Approved, Rejected, Not Requested.")
+        return normalized
+
+    @staticmethod
+    async def count_pending() -> int:
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+        return await db.shifts.count_documents({"ShiftSwapStatus": {"$regex": r"^pending$", "$options": "i"}})
+
+
     # ----------------------------------------------------------------------
     # GET ALL SHIFT REQUESTS
     # ----------------------------------------------------------------------
 
     @staticmethod
     async def get_all(
-        status: Optional[str] = None
+        status: Optional[str] = None,
+        page: int = 1,
+        size: int = 50,
+        emp_id: Optional[str] = None,
+        emp_ids: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
 
         db = get_database()
@@ -1551,30 +2058,32 @@ class ShiftService:
 
         query: Dict[str, Any] = {}
 
+        if emp_ids:
+            query["EmpID"] = {"$in": [str(item).strip() for item in emp_ids if str(item).strip()]}
+        elif emp_id and str(emp_id).strip():
+            query["EmpID"] = str(emp_id).strip()
+
         if status and status.lower() != "all":
 
-            normalized_status = status.strip().capitalize()
+            normalized_status = status.strip().title()
 
-            if normalized_status not in {
-                "Pending",
-                "Approved",
-                "Rejected"
-            }:
+            if normalized_status not in ShiftService.VALID_STATUSES:
                 return []
 
             query["ShiftSwapStatus"] = normalized_status
 
         # ---------------------------------------------------------
-        # Get shift records
+        # Pagination
         # ---------------------------------------------------------
+        skip = (page - 1) * size
 
         cursor = db.shifts.find(
             query,
             {"_id": 0}
-        )
+        ).skip(skip).limit(size)
 
         items = await cursor.to_list(
-            length=None
+            length=size
         )
 
         # ---------------------------------------------------------
@@ -1602,11 +2111,11 @@ class ShiftService:
         normalized_items = []
 
         for item in items:
-            emp_id = item.get("EmpID")
+            emp_id_val = item.get("EmpID")
             normalized_items.append(
                 normalize_shift(
                     item,
-                    employee_lookup.get(emp_id)
+                    employee_lookup.get(emp_id_val)
                 )
             )
 
@@ -1628,18 +2137,27 @@ class ShiftService:
                 "MongoDB database is not connected."
             )
 
+        if not request.empId or not str(request.empId).strip():
+            raise ValueError("Invalid employee ID.")
+
         # ---------------------------------------------------------
         # Verify employee exists
         # ---------------------------------------------------------
 
         employee = await EmployeeService.get_by_id(
-            request.empId
+            str(request.empId).strip()
         )
 
         if not employee:
             raise ValueError(
                 f"Employee '{request.empId}' was not found."
             )
+
+        if not request.requestedShift or not str(request.requestedShift).strip():
+            raise ValueError("requestedShift is required.")
+
+        if not request.requestedDate or not str(request.requestedDate).strip():
+            raise ValueError("requestedDate is required.")
 
         # ---------------------------------------------------------
         # Parse requested shift
@@ -1648,7 +2166,7 @@ class ShiftService:
         # "Night (22:00 - 07:00)"
         # ---------------------------------------------------------
 
-        requested_shift = request.requestedShift.strip()
+        requested_shift = str(request.requestedShift).strip()
 
         if "(" not in requested_shift or ")" not in requested_shift:
             raise ValueError(
@@ -1699,15 +2217,15 @@ class ShiftService:
         try:
 
             datetime.strptime(
-                request.requestedDate,
+                str(request.requestedDate),
                 "%Y-%m-%d"
             )
 
-        except ValueError:
+        except ValueError as exc:
 
             raise ValueError(
                 "requestedDate must use YYYY-MM-DD format."
-            )
+            ) from exc
 
         # ---------------------------------------------------------
         # Generate next ShiftID atomically
@@ -1745,13 +2263,13 @@ class ShiftService:
         )
 
         record = {
-            "EmpID": request.empId,
+            "EmpID": str(request.empId).strip(),
             "ShiftName": shift_name,
             "ShiftStart": shift_start,
             "ShiftEnd": shift_end,
             "OvertimeHours": 0.0,
             "ShiftSwapApproved": False,
-            "ShiftDate": request.requestedDate,
+            "ShiftDate": str(request.requestedDate),
             "ShiftID": shift_id,
             "ShiftSwapStatus": "Pending",
             "Reason": request.reason,
@@ -1792,26 +2310,59 @@ class ShiftService:
                 "MongoDB database is not connected."
             )
 
-        new_status = update.status
-
-        # ---------------------------------------------------------
-        # Keep both fields synchronized
-        # ---------------------------------------------------------
-
-        approved = (
-            new_status == "Approved"
+        current = await db.shifts.find_one(
+            {"ShiftID": shift_id},
+            projection={"_id": 0}
         )
+
+        if not current:
+            return None
+
+        current_status = ShiftService._normalize_status(current.get("ShiftSwapStatus"))
+        if current_status != "Pending":
+            raise ValueError("Only pending shift requests can be approved or rejected.")
+
+        emp_id = current.get("EmpID")
+        if not emp_id:
+            raise ValueError("Shift request is missing an employee ID.")
+
+        employee = await EmployeeService.get_by_id(str(emp_id).strip())
+        if not employee:
+            raise ValueError(f"Employee '{emp_id}' was not found.")
+
+        requested_shift_name = str(current.get("ShiftName") or "").strip()
+        requested_shift_start = str(current.get("ShiftStart") or "").strip()
+        requested_shift_end = str(current.get("ShiftEnd") or "").strip()
+        if not requested_shift_name or not requested_shift_start or not requested_shift_end:
+            raise ValueError("Requested shift data is incomplete and cannot be approved.")
+
+        requested_date = str(current.get("ShiftDate") or "").strip()
+        if requested_date:
+            try:
+                datetime.strptime(requested_date, "%Y-%m-%d")
+            except ValueError as exc:
+                raise ValueError("Requested date is invalid; use YYYY-MM-DD.") from exc
+
+        new_status = ShiftService._normalize_status(update.status)
+        approved = (new_status == "Approved")
+
+        update_payload = {
+            "$set": {
+                "ShiftSwapStatus": new_status,
+                "ShiftSwapApproved": approved,
+            }
+        }
+
+        if getattr(update, "approverComments", None) is not None:
+            comment = str(update.approverComments).strip()
+            if comment:
+                update_payload["$set"]["ManagerComments"] = comment
 
         result = await db.shifts.find_one_and_update(
             {
                 "ShiftID": shift_id
             },
-            {
-                "$set": {
-                    "ShiftSwapStatus": new_status,
-                    "ShiftSwapApproved": approved
-                }
-            },
+            update_payload,
             return_document=True,
             projection={
                 "_id": 0
@@ -1821,26 +2372,8 @@ class ShiftService:
         if not result:
             return None
 
-        # ---------------------------------------------------------
-        # Employee enrichment
-        # ---------------------------------------------------------
-
-        employee = None
-
-        emp_id = result.get(
-            "EmpID"
-        )
-
-        if emp_id:
-
-            employee = await EmployeeService.get_by_id(
-                emp_id
-            )
-
-        return normalize_shift(
-            result,
-            employee
-        )
+        employee = await EmployeeService.get_by_id(str(emp_id).strip())
+        return normalize_shift(result, employee)
 
 
 # ==========================================================================
@@ -1851,7 +2384,10 @@ class TimesheetService:
 
     @staticmethod
     async def get_all(
-        emp_id: Optional[str] = None
+        emp_id: Optional[str] = None,
+        emp_ids: Optional[List[str]] = None,
+        page: int = 1,
+        size: int = 50
     ) -> List[Dict[str, Any]]:
 
         db = get_database()
@@ -1867,20 +2403,23 @@ class TimesheetService:
 
         query: Dict[str, Any] = {}
 
-        if emp_id:
+        if emp_ids:
+            query["EmpID"] = {"$in": [str(item).strip() for item in emp_ids if str(item).strip()]}
+        elif emp_id:
             query["EmpID"] = emp_id
 
         # ---------------------------------------------------------
-        # Get records
+        # Pagination
         # ---------------------------------------------------------
+        skip = (page - 1) * size
 
         cursor = db.timesheets.find(
             query,
             {"_id": 0}
-        )
+        ).skip(skip).limit(size)
 
         items = await cursor.to_list(
-            length=None
+            length=size
         )
 
         # ---------------------------------------------------------
@@ -1963,7 +2502,9 @@ class PayrollService:
 
     @staticmethod
     async def get_all(
-        month: Optional[str] = None
+        month: Optional[str] = None,
+        page: int = 1,
+        size: int = 50
     ) -> List[Dict[str, Any]]:
 
         db = get_database()
@@ -1986,16 +2527,17 @@ class PayrollService:
             }
 
         # ---------------------------------------------------------
-        # Get payroll records
+        # Pagination
         # ---------------------------------------------------------
+        skip = (page - 1) * size
 
         cursor = db.payroll.find(
             query,
             {"_id": 0}
-        )
+        ).skip(skip).limit(size)
 
         items = await cursor.to_list(
-            length=None
+            length=size
         )
 
         # ---------------------------------------------------------
@@ -2006,6 +2548,34 @@ class PayrollService:
             normalize_payroll(item)
             for item in items
         ]
+
+    @staticmethod
+    async def sum_net_salary_for_month(month: Optional[str] = None) -> float:
+        """Return the total NetSalary for the provided PayrollMonth. If month is None, sum across all documents."""
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+
+        match_stage = { }
+        if month:
+            match_stage = {"$match": {"PayrollMonth": {"$regex": f"^{month}$", "$options": "i"}}}
+
+        pipeline = []
+        if match_stage:
+            pipeline.append(match_stage)
+
+        pipeline.append({
+            "$group": {
+                "_id": None,
+                "total": {"$sum": {"$ifNull": ["$NetSalary", 0]}}
+            }
+        })
+
+        cursor = db.payroll.aggregate(pipeline)
+        result = await cursor.to_list(length=1)
+        if result:
+            return float(result[0].get("total", 0.0) or 0.0)
+        return 0.0
 
     @staticmethod
     async def calculate(
@@ -2276,6 +2846,37 @@ class PerformanceService:
 class NotificationService:
 
     @staticmethod
+    def _notification_match_query(notif_id: str) -> Dict[str, Any]:
+        or_clauses = [
+            {"id": notif_id},
+            {
+                "$expr": {
+                    "$eq": [
+                        {
+                            "$concat": [
+                                "NOTIF-",
+                                "$EmpID",
+                                "-",
+                                "$NotificationDate"
+                            ]
+                        },
+                        notif_id
+                    ]
+                }
+            },
+            {"_id": notif_id}
+        ]
+
+        try:
+            from bson import ObjectId
+            oid = ObjectId(notif_id)
+            or_clauses.insert(0, {"_id": oid})
+        except Exception:
+            pass
+
+        return {"$or": or_clauses}
+
+    @staticmethod
     async def create(
         data: NotificationCreate
     ) -> Dict[str, Any]:
@@ -2302,7 +2903,18 @@ class NotificationService:
         return normalize_notification(notification)
 
     @staticmethod
-    async def get_all() -> List[Dict[str, Any]]:
+    async def get_by_id(notif_id: str) -> Optional[Dict[str, Any]]:
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+
+        existing = await db.notifications.find_one(NotificationService._notification_match_query(notif_id))
+        if not existing:
+            return None
+        return normalize_notification(existing)
+
+    @staticmethod
+    async def get_all(page: int = 1, size: int = 50, emp_id: Optional[str] = None) -> List[Dict[str, Any]]:
 
         db = get_database()
 
@@ -2311,13 +2923,20 @@ class NotificationService:
                 "MongoDB database is not connected."
             )
 
+        query: Dict[str, Any] = {}
+        if emp_id and str(emp_id).strip():
+            query["EmpID"] = str(emp_id).strip()
+
+        skip = (page - 1) * size
+
+        # Include MongoDB _id so we can synthesize a stable API id, but only return the specific fields we need
         cursor = db.notifications.find(
-            {},
-            {"_id": 0}
-        )
+            query,
+            {"_id": 1, "id": 1, "EmpID": 1, "Type": 1, "Message": 1, "Status": 1, "NotificationDate": 1, "priority": 1}
+        ).skip(skip).limit(size)
 
         items = await cursor.to_list(
-            length=None
+            length=size
         )
 
         return [
@@ -2327,7 +2946,9 @@ class NotificationService:
 
     @staticmethod
     async def mark_read(
-        notif_id: str
+        notif_id: str,
+        emp_id: Optional[str] = None,
+        role: Optional[str] = None
     ) -> bool:
 
         db = get_database()
@@ -2337,34 +2958,16 @@ class NotificationService:
                 "MongoDB database is not connected."
             )
 
-        # ---------------------------------------------------------
-        # New notifications have an explicit id.
-        #
-        # Existing raw records may not have an id, so the
-        # normalizer generates one from EmpID + timestamp.
-        # ---------------------------------------------------------
+        existing = await db.notifications.find_one(NotificationService._notification_match_query(notif_id))
+        if not existing:
+            return False
+
+        if emp_id and str(role or "").upper() != "HR_ADMIN":
+            if str(existing.get("EmpID") or "").strip() != str(emp_id).strip():
+                return False
 
         result = await db.notifications.update_one(
-            {
-                "$or": [
-                    {"id": notif_id},
-                    {
-                        "$expr": {
-                            "$eq": [
-                                {
-                                    "$concat": [
-                                        "NOTIF-",
-                                        "$EmpID",
-                                        "-",
-                                        "$NotificationDate"
-                                    ]
-                                },
-                                notif_id
-                            ]
-                        }
-                    }
-                ]
-            },
+            {"_id": existing["_id"]},
             {
                 "$set": {
                     "Status": "Read",
@@ -2379,7 +2982,10 @@ class NotificationService:
         )
 
     @staticmethod
-    async def mark_all_read() -> bool:
+    async def mark_all_read(
+        emp_id: Optional[str] = None,
+        role: Optional[str] = None
+    ) -> bool:
 
         db = get_database()
 
@@ -2388,15 +2994,12 @@ class NotificationService:
                 "MongoDB database is not connected."
             )
 
-        # ---------------------------------------------------------
-        # Update the RAW MongoDB field.
-        #
-        # Existing records use:
-        # Status = "Read" / "Unread"
-        # ---------------------------------------------------------
+        query: Dict[str, Any] = {}
+        if emp_id and str(role or "").upper() != "HR_ADMIN":
+            query["EmpID"] = str(emp_id).strip()
 
         await db.notifications.update_many(
-            {},
+            query,
             {
                 "$set": {
                     "Status": "Read",
@@ -2424,10 +3027,11 @@ class AuditService:
                 "MongoDB database is not connected."
             )
 
-        cursor = db.audit_logs.find(
-            {},
-            {"_id": 0}
-        )
+        # Include MongoDB _id so older audit records that lack an explicit
+        # 'id' can be synthesized by normalize_audit_log. Returning full
+        # documents is acceptable for audit logs (sensitive fields are
+        # already API-oriented in this collection).
+        cursor = db.audit_logs.find()
 
         items = await cursor.to_list(
             length=None
@@ -2494,6 +3098,13 @@ class AuditService:
 # ==========================================================================
 
 class AIPredictionService:
+    @staticmethod
+    async def count_attrition_above(threshold: float = 0.7) -> int:
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+        return await db.ai_predictions.count_documents({"AttritionRisk": {"$gt": threshold}})
+
 
     @staticmethod
     async def get_all(

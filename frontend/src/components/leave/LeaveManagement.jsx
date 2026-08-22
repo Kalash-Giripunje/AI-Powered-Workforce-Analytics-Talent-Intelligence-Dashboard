@@ -59,8 +59,12 @@ export const LeaveManagement = ({
     parentalLeave: { total: 0, used: 0, remaining: 0 }
   };
 
-  const pendingLeaves = (leaves || []).filter((l) => l.status === 'Pending');
-  const historyLeaves = (leaves || []).filter((l) => l.status !== 'Pending');
+  const safeLeaves = (userRole === 'HR_ADMIN' || userRole === 'MANAGER') ? (leaves || []) : (leaves || []).filter((l) => {
+    const lid = l?.empId || l?.EmpID || l?.EmpId || l?.employeeId || null;
+    return lid && String(lid) === String(selectedEmployeeId);
+  });
+  const pendingLeaves = (safeLeaves || []).filter((l) => l.status === 'Pending');
+  const historyLeaves = (safeLeaves || []).filter((l) => l.status !== 'Pending');
 
   const toggleExpand = (id) => {
     setExpandedLeaveId(expandedLeaveId === id ? null : id);
@@ -247,30 +251,41 @@ export const LeaveManagement = ({
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {currentLeaves.map((leave) => {
-            const isExpanded = expandedLeaveId === leave.id;
+          {currentLeaves.map((leave, idx) => {
+            const isExpanded = expandedLeaveId === (leave.id || `${leave.empId || 'unknown'}-${idx}`);
+            const rowKey = leave.id || `${leave.empId || 'unknown'}-${idx}`;
+            // Defensive empName handling - some records may have null/undefined empName
+            const displayName = typeof leave.empName === 'string' && leave.empName.trim() !== ''
+              ? leave.empName
+              : (leave.empId || 'N/A');
+
+            // Compute initials safely
+            const initials = (typeof displayName === 'string' && displayName)
+              ? displayName.split(' ').filter(Boolean).map((n) => n[0]).join('').slice(0,2)
+              : (leave.empId ? String(leave.empId).slice(-2) : 'NA');
+
             return (
               <div
-                key={leave.id}
+                key={rowKey}
                 className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-indigo-300 dark:border-slate-800 dark:bg-slate-900"
               >
                 {/* Person Header (Clicking opens details) */}
                 <div
-                  onClick={() => toggleExpand(leave.id)}
+                  onClick={() => toggleExpand(rowKey)}
                   className="flex cursor-pointer items-start justify-between border-b border-slate-100 pb-3 dark:border-slate-800"
                 >
                   <div className="flex items-center gap-3">
                     <div className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-100 text-indigo-700 font-bold dark:bg-indigo-950 dark:text-indigo-300">
-                      {leave.empName.split(' ').map((n) => n[0]).join('')}
+                      {initials}
                     </div>
                     <div>
                       <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                        {leave.empName}
+                        {displayName}
                         <span className="text-[10px] text-indigo-600 font-semibold dark:text-indigo-400">
                           ({leave.empId})
                         </span>
                       </h3>
-                      <div className="text-xs text-slate-500">{leave.department}</div>
+                      <div className="text-xs text-slate-500">{leave.department || 'N/A'}</div>
                     </div>
                   </div>
 
@@ -322,7 +337,7 @@ export const LeaveManagement = ({
 
                     <div className="flex justify-between text-[11px] text-slate-400">
                       <span>Applied Date: {leave.appliedOn || '2026-08-01'}</span>
-                      <span>Request ID: {leave.id}</span>
+                      <span>Request ID: {leave.id || 'N/A'}</span>
                     </div>
 
                     {leave.status === 'Pending' && (
@@ -332,8 +347,8 @@ export const LeaveManagement = ({
                           <input
                             type="text"
                             placeholder="Add manager comments or approval remarks..."
-                            value={commentInput[leave.id] || ''}
-                            onChange={(e) => handleCommentChange(leave.id, e.target.value)}
+                            value={commentInput[rowKey] || ''}
+                            onChange={(e) => handleCommentChange(rowKey, e.target.value)}
                             className="w-full rounded-lg border border-slate-200 bg-white py-1.5 pl-8 pr-3 text-xs text-slate-900 focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                           />
                         </div>
@@ -343,7 +358,7 @@ export const LeaveManagement = ({
                             onClick={() =>
                               onApproveLeave(
                                 leave.id,
-                                commentInput[leave.id] || 'Approved by HR Manager'
+                                commentInput[rowKey] || 'Approved by HR Manager'
                               )
                             }
                             className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-700"
@@ -356,7 +371,7 @@ export const LeaveManagement = ({
                             onClick={() =>
                               onRejectLeave(
                                 leave.id,
-                                commentInput[leave.id] || 'Rejected due to coverage constraints'
+                                commentInput[rowKey] || 'Rejected due to coverage constraints'
                               )
                             }
                             className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-rose-600 py-2 text-xs font-bold text-white shadow-sm hover:bg-rose-700"

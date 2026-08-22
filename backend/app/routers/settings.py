@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
+from backend.app.routers.auth import require_hr_admin
 
 from backend.app.models.additional_schemas import SystemSettings
 from backend.app.database import get_database
@@ -11,8 +12,9 @@ router = APIRouter(
 
 
 @router.get("", response_model=SystemSettings)
-async def get_system_settings():
+async def get_system_settings(request: Request):
     """Retrieve app-managed configuration settings without creating synthetic defaults."""
+    await require_hr_admin(request)
 
     db = get_database()
 
@@ -36,9 +38,11 @@ async def get_system_settings():
 
 @router.put("", response_model=SystemSettings)
 async def update_system_settings(
+    request: Request,
     settings: SystemSettings
 ):
     """Persist app-managed configuration only when an existing settings record is present."""
+    await require_hr_admin(request)
 
     db = get_database()
 

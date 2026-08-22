@@ -1,6 +1,22 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+const AUTH_TOKEN_KEY = 'nexus_hrms_auth_token';
+const AUTH_USER_KEY = 'nexus_hrms_auth_user';
+
+// Normalize API base URL: accept either a full URL (e.g. http://127.0.0.1:8000 or http://127.0.0.1:8000/api)
+// or fall back to the development proxy path '/api'. If VITE_API_URL is set but
+// does not include the '/api' path segment, append it so apiClient requests go to
+// the correct backend routes (e.g. /api/employees).
+const rawApiUrl = import.meta.env.VITE_API_URL;
+let API_BASE_URL = '/api';
+if (rawApiUrl && rawApiUrl.length > 0) {
+  const trimmed = rawApiUrl.replace(/\/+$/, '');
+  if (trimmed.endsWith('/api')) {
+    API_BASE_URL = trimmed;
+  } else {
+    API_BASE_URL = `${trimmed}/api`;
+  }
+}
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -9,7 +25,44 @@ const apiClient = axios.create({
   },
 });
 
-// Response interceptor for unified error handling
+export function getStoredAuthToken() {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(AUTH_TOKEN_KEY);
+}
+
+export function persistAuthSession(token, user) {
+  if (typeof window === 'undefined') return;
+  if (token) {
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
+  } else {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+  }
+  if (user) {
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+  } else {
+    localStorage.removeItem(AUTH_USER_KEY);
+  }
+}
+
+export function clearAuthSession() {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_USER_KEY);
+}
+
+// Request interceptor: attach bearer token if available
+apiClient.interceptors.request.use((config) => {
+  const token = getStoredAuthToken();
+  if (token) {
+    config.headers = config.headers || {};
+    if (!String(config.headers.Authorization || '').startsWith('Bearer ')) {
+      config.headers.Authorization = 'Bearer ' + token;
+    }
+  }
+  return config;
+});
+
+
 apiClient.interceptors.response.use(
   (response) => response.data,
   (error) => {
@@ -19,6 +72,11 @@ apiClient.interceptors.response.use(
 );
 
 export const api = {
+  // Auth
+  login: (data) => apiClient.post('/auth/login', data),
+  logout: () => apiClient.post('/auth/logout'),
+  getCurrentUser: () => apiClient.get('/auth/me'),
+
   // Health
   getHealth: () => apiClient.get('/health'),
 
@@ -56,6 +114,10 @@ export const api = {
   getPayroll: (params) => apiClient.get('/payroll', { params }),
   calculatePayroll: (month) => apiClient.post('/payroll/calculate', null, { params: { month } }),
   disbursePayroll: (payrollId) => apiClient.put(`/payroll/${payrollId}/disburse`),
+  // Download payslip PDF (returns blob)
+  downloadPayslip: (empId, month) => apiClient.get(`/payroll/${empId}/payslip`, { params: { month }, responseType: 'blob' }),
+  // Export payroll CSV (returns blob)
+  exportPayroll: (month) => apiClient.get('/payroll/export', { params: { month }, responseType: 'blob' }),
 
   // Performance
   getPerformance: () => apiClient.get('/performance'),
@@ -73,6 +135,8 @@ export const api = {
   // Reports
   generateReport: (data) => apiClient.post('/reports/generate', data),
   getReportSummary: () => apiClient.get('/reports/summary'),
+  // Download report by relative URL (returns a blob)
+  downloadReportByUrl: (downloadUrl) => apiClient.get(downloadUrl, { responseType: 'blob' }),
 
   // Settings
   getSettings: () => apiClient.get('/settings'),
@@ -81,6 +145,12 @@ export const api = {
   // Profile
   getProfile: () => apiClient.get('/profile'),
   updateProfile: (data) => apiClient.put('/profile', data),
+
+  // Change password
+  changePassword: (payload) => apiClient.post('/auth/change-password', payload),
+
+  // Holidays
+  getHolidays: (month) => apiClient.get('/holidays', { params: { month } }),
 
   // AI Intelligence
   sendChatMessage: (message, role, context) => apiClient.post('/chat', { message, role, context }),

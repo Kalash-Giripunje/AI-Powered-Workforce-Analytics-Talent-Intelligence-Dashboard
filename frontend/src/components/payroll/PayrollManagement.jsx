@@ -1,13 +1,27 @@
 import React, { useState } from 'react';
 import { Banknote, Download, FileText, CheckCircle2, DollarSign, Calculator, RefreshCw } from 'lucide-react';
+import { api } from '../../services/api';
 
 
 
-export const PayrollManagement = ({ payrollRecords = [], payrollLoading = false, payrollError = null }) => {
+export const PayrollManagement = ({
+  payrollRecords = [],
+  payrollLoading = false,
+  payrollError = null,
+  userRole = 'EMPLOYEE',
+  currentEmpId = null
+}) => {
   const [selectedPayslip, setSelectedPayslip] = useState(null);
   const safePayrollRecords = Array.isArray(payrollRecords) ? payrollRecords : [];
+  const isHrAdmin = userRole === 'HR_ADMIN';
+  const visiblePayrollRecords = isHrAdmin
+    ? safePayrollRecords
+    : safePayrollRecords.filter((record) => {
+        const recordEmpId = record?.empId || record?.EmpID || record?.EmpId || record?.employeeId || null;
+        return recordEmpId && currentEmpId && String(recordEmpId) === String(currentEmpId);
+      });
 
-  const totalGross = safePayrollRecords.reduce((acc, p) => {
+  const totalGross = visiblePayrollRecords.reduce((acc, p) => {
     const baseSalary = Number(p?.baseSalary || 0);
     const overtimePay = Number(p?.overtimePay || 0);
     const performanceBonus = Number(p?.performanceBonus || 0);
@@ -15,8 +29,8 @@ export const PayrollManagement = ({ payrollRecords = [], payrollLoading = false,
     return acc + computedGross;
   }, 0);
 
-  const totalNet = safePayrollRecords.reduce((acc, p) => acc + Number(p?.netPay || 0), 0);
-  const totalOvertime = safePayrollRecords.reduce((acc, p) => acc + Number(p?.overtimePay || 0), 0);
+  const totalNet = visiblePayrollRecords.reduce((acc, p) => acc + Number(p?.netPay || 0), 0);
+  const totalOvertime = visiblePayrollRecords.reduce((acc, p) => acc + Number(p?.overtimePay || 0), 0);
 
   return (
     <div className="space-y-6">
@@ -24,24 +38,48 @@ export const PayrollManagement = ({ payrollRecords = [], payrollLoading = false,
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-            Automated Payroll Inputs & Compensation Engine
+            {isHrAdmin ? 'Automated Payroll Inputs & Compensation Engine' : 'My Payroll & Compensation'}
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Real-time synchronization with biometric attendance, overtime multipliers, tax deductions, and ERP export
+            {isHrAdmin
+              ? 'Payroll synchronization with attendance records, overtime multipliers, tax deductions, and ERP export'
+              : 'Your payroll summary and compensation details.'}
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200">
-            <RefreshCw className="h-4 w-4" />
-            Recalculate Inputs
-          </button>
+        {isHrAdmin && (
+          <div className="flex items-center gap-2">
+            <button className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200">
+              <RefreshCw className="h-4 w-4" />
+              Recalculate Inputs
+            </button>
 
-          <button className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white shadow-md hover:bg-indigo-700">
-            <Download className="h-4 w-4" />
-            Export Payroll File (CSV / ERP)
-          </button>
-        </div>
+            <button
+              onClick={async () => {
+                try {
+                  const monthParam = undefined;
+                  const blob = await api.exportPayroll(monthParam);
+                  const url = window.URL.createObjectURL(blob);
+                  const filename = `Nexus_Payroll_Export_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'_')}.csv`;
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = filename;
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  window.URL.revokeObjectURL(url);
+                } catch (err) {
+                  console.error('Payroll export failed', err);
+                  alert('Failed to export payroll. Please try again or contact support.');
+                }
+              }}
+              className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white shadow-md hover:bg-indigo-700"
+            >
+              <Download className="h-4 w-4" />
+              Export Payroll File (CSV / ERP)
+            </button>
+          </div>
+        )}
       </div>
 
       {/* KPI Stats */}
@@ -76,13 +114,17 @@ export const PayrollManagement = ({ payrollRecords = [], payrollLoading = false,
         <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
           <div>
             <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-              August 2026 Salary Disbursal Register
+              {isHrAdmin ? 'August 2026 Salary Disbursal Register' : 'My Payroll Summary'}
             </h3>
-            <p className="text-xs text-slate-500">Automated calculations synced with attendance</p>
+            <p className="text-xs text-slate-500">
+              {isHrAdmin ? 'Automated calculations synced with attendance' : 'Payroll information for your current account.'}
+            </p>
           </div>
-          <span className="rounded bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800">
-            Ready for Disbursal
-          </span>
+          {isHrAdmin && (
+            <span className="rounded bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800">
+              Ready for Disbursal
+            </span>
+          )}
         </div>
 
         {payrollLoading && (
@@ -111,14 +153,14 @@ export const PayrollManagement = ({ payrollRecords = [], payrollLoading = false,
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {safePayrollRecords.length === 0 ? (
+                {visiblePayrollRecords.length === 0 ? (
                   <tr>
                     <td colSpan="8" className="py-6 px-2 text-center text-slate-500">
                       No payroll records available.
                     </td>
                   </tr>
                 ) : (
-                  safePayrollRecords.map((p) => {
+                  visiblePayrollRecords.map((p) => {
                     const empDisplay = p?.empName || p?.empId || 'N/A';
                     const deptDisplay = p?.department || '-';
                     const monthDisplay = p?.month || 'N/A';
@@ -230,7 +272,32 @@ export const PayrollManagement = ({ payrollRecords = [], payrollLoading = false,
 
             <div className="mt-6 flex justify-end">
               <button
-                onClick={() => setSelectedPayslip(null)}
+                onClick={async () => {
+                  try {
+                    const empId = selectedPayslip?.empId || selectedPayslip?.EmpID || selectedPayslip?.empId;
+                    const month = selectedPayslip?.month || selectedPayslip?.PayrollMonth || selectedPayslip?.month;
+                    if (!empId) {
+                      alert('Unable to determine employee ID for this payslip.');
+                      return;
+                    }
+
+                    // api.downloadPayslip returns a Blob because responseType: 'blob' is set
+                    const blob = await api.downloadPayslip(empId, month);
+
+                    const url = window.URL.createObjectURL(blob);
+                    const filename = `Nexus_Payslip_${empId}_${month || 'payslip'}.pdf`;
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    window.URL.revokeObjectURL(url);
+                  } catch (err) {
+                    console.error('Payslip download failed', err);
+                    alert('Failed to download payslip. Please try again or contact support.');
+                  }
+                }}
                 className="rounded-lg bg-indigo-600 px-4 py-2 font-bold text-white hover:bg-indigo-700"
               >
                 Download PDF Payslip

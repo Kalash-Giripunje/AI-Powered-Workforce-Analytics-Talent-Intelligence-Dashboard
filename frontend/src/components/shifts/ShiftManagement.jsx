@@ -9,14 +9,24 @@ export const ShiftManagement = ({
   onRequestShift,
   onApproveShift,
   onRejectShift,
-  userRole
+  userRole,
+  currentEmpId = null
 }) => {
   const [showRequestModal, setShowRequestModal] = useState(false);
   const [requestedShift, setRequestedShift] = useState('Morning Shift (09:00 - 18:00)');
   const [requestedDate, setRequestedDate] = useState('2026-08-12');
   const [reason, setReason] = useState('');
 
+  const isHrAdmin = userRole === 'HR_ADMIN';
+  const isManager = userRole === 'MANAGER';
+  const canManageTeam = isHrAdmin || isManager;
   const selectedEmployee = employees.find((employee) => employee.empId === selectedEmployeeId) || null;
+  const employeeShiftView = (Array.isArray(shifts) ? shifts : []).filter((shift) => {
+    if (canManageTeam) return true;
+    const shiftEmpId = shift?.empId || shift?.EmpID || shift?.EmpId || shift?.employeeId || null;
+    const employeeIdToMatch = currentEmpId || selectedEmployeeId;
+    return shiftEmpId && employeeIdToMatch && shiftEmpId === employeeIdToMatch;
+  });
 
   const handleSubmitRequest = async (e) => {
     e.preventDefault();
@@ -42,8 +52,9 @@ export const ShiftManagement = ({
     setReason('');
   };
 
-  const pendingRequests = shifts.filter((s) => s.status === 'Pending');
-  const actionedRequests = shifts.filter((s) => s.status !== 'Pending');
+  const pendingRequests = employeeShiftView.filter((s) => s.status === 'Pending');
+  const actionedRequests = employeeShiftView.filter((s) => s.status !== 'Pending');
+  const getReasonText = (req) => req?.reason || req?.employeeReason || req?.RequestReason || req?.requestReason || req?.Comments || req?.Remarks || 'No reason provided';
 
   return (
     <div className="space-y-6">
@@ -90,130 +101,174 @@ export const ShiftManagement = ({
         </div>
       </div>
 
-      {/* Pending HR Shift Approval Queue */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
-          <div>
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-              Pending Shift Requests ({pendingRequests.length})
-            </h3>
-            <p className="text-xs text-slate-500">Requests submitted by employees with detailed reasons</p>
-          </div>
-          <span className="rounded bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-            HR Decision Needed
-          </span>
-        </div>
-
-        {pendingRequests.length === 0 ? (
-          <div className="p-8 text-center text-xs text-slate-500">
-            No pending shift requests at the moment.
-          </div>
-        ) : (
-          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-            {pendingRequests.map((req) => (
-              <div
-                key={req.id}
-                className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 shadow-sm dark:border-slate-800 dark:bg-slate-800/40"
-              >
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-900 dark:text-white">{req.empName}</h4>
-                    <span className="text-[11px] text-indigo-600 font-semibold dark:text-indigo-400">
-                      {req.department}
-                    </span>
-                  </div>
-                  <span className="rounded bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                    Pending HR Review
-                  </span>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  <div>
-                    <span className="text-[10px] text-slate-400 block">Requested Shift</span>
-                    <span className="font-bold text-slate-800 dark:text-slate-200">{req.requestedShift}</span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-slate-400 block">Requested Date</span>
-                    <span className="font-bold text-slate-800 dark:text-slate-200">{req.requestedDate}</span>
-                  </div>
-                </div>
-
-                <div className="mt-3 rounded-lg bg-white p-2.5 text-xs border border-slate-200 dark:border-slate-700 dark:bg-slate-900">
-                  <span className="font-bold text-slate-500 block text-[10px] uppercase">Reason Provided by Employee:</span>
-                  <p className="mt-0.5 text-slate-700 dark:text-slate-300 font-medium">{req.reason}</p>
-                </div>
-
-                <div className="mt-4 flex items-center gap-2">
-                  <button
-                    onClick={() => onApproveShift(req.id)}
-                    className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 py-2 text-xs font-bold text-white hover:bg-emerald-700"
-                  >
-                    <CheckCircle2 className="h-4 w-4" />
-                    Approve Shift
-                  </button>
-                  <button
-                    onClick={() => onRejectShift(req.id)}
-                    className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-rose-600 py-2 text-xs font-bold text-white hover:bg-rose-700"
-                  >
-                    <XCircle className="h-4 w-4" />
-                    Reject Shift
-                  </button>
-                </div>
+      {canManageTeam ? (
+        <>
+          {/* Pending HR Shift Approval Queue */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  Pending Shift Requests ({pendingRequests.length})
+                </h3>
+                <p className="text-xs text-slate-500">Requests submitted by employees with detailed reasons</p>
               </div>
-            ))}
+              <span className="rounded bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                HR Decision Needed
+              </span>
+            </div>
+
+            {pendingRequests.length === 0 ? (
+              <div className="p-8 text-center text-xs text-slate-500">
+                No pending shift requests at the moment.
+              </div>
+            ) : (
+              <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+                {pendingRequests.map((req) => (
+                  <div
+                    key={req.id}
+                    className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 shadow-sm dark:border-slate-800 dark:bg-slate-800/40"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900 dark:text-white">{req.empName}</h4>
+                        <span className="text-[11px] text-indigo-600 font-semibold dark:text-indigo-400">
+                          {req.department}
+                        </span>
+                      </div>
+                      <span className="rounded bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                        Pending HR Review
+                      </span>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <span className="text-[10px] text-slate-400 block">Requested Shift</span>
+                        <span className="font-bold text-slate-800 dark:text-slate-200">{req.requestedShift}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-400 block">Requested Date</span>
+                        <span className="font-bold text-slate-800 dark:text-slate-200">{req.requestedDate}</span>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 rounded-lg bg-white p-2.5 text-xs border border-slate-200 dark:border-slate-700 dark:bg-slate-900">
+                      <span className="font-bold text-slate-500 block text-[10px] uppercase">Reason Provided by Employee:</span>
+                      <p className="mt-0.5 text-slate-700 dark:text-slate-300 font-medium">{getReasonText(req)}</p>
+                    </div>
+
+                    <div className="mt-4 flex items-center gap-2">
+                      <button
+                        onClick={() => onApproveShift(req.id)}
+                        className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 py-2 text-xs font-bold text-white hover:bg-emerald-700"
+                      >
+                        <CheckCircle2 className="h-4 w-4" />
+                        Approve Shift
+                      </button>
+                      <button
+                        onClick={() => onRejectShift(req.id)}
+                        className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-rose-600 py-2 text-xs font-bold text-white hover:bg-rose-700"
+                      >
+                        <XCircle className="h-4 w-4" />
+                        Reject Shift
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      {/* Actioned / Approved Shift Allocation History */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <h3 className="border-b border-slate-100 pb-3 text-sm font-bold text-slate-900 dark:border-slate-800 dark:text-white">
-          All Shift Request Records & Decisions
-        </h3>
+          {/* Actioned / Approved Shift Allocation History */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <h3 className="border-b border-slate-100 pb-3 text-sm font-bold text-slate-900 dark:border-slate-800 dark:text-white">
+              All Shift Request Records & Decisions
+            </h3>
 
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 text-slate-400 uppercase font-semibold text-[10px] dark:border-slate-800">
-                <th className="py-3 px-2">Employee</th>
-                <th className="py-3 px-2">Department</th>
-                <th className="py-3 px-2">Requested Shift Slot</th>
-                <th className="py-3 px-2">Requested Date</th>
-                <th className="py-3 px-2">Reason</th>
-                <th className="py-3 px-2">HR Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {shifts.map((s) => (
-                <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                  <td className="py-3 px-2 font-bold text-slate-900 dark:text-white">{s.empName}</td>
-                  <td className="py-3 px-2 text-slate-600 dark:text-slate-300">{s.department}</td>
-                  <td className="py-3 px-2 font-semibold text-indigo-600 dark:text-indigo-400">
-                    {s.requestedShift || s.shiftName}
-                  </td>
-                  <td className="py-3 px-2 text-slate-500">{s.requestedDate || s.assignedDate}</td>
-                  <td className="py-3 px-2 text-slate-600 dark:text-slate-300 max-w-xs truncate">
-                    {s.reason || 'Standard operational assignment'}
-                  </td>
-                  <td className="py-3 px-2">
-                    <span
-                      className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
-                        s.status === 'Approved'
-                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                          : s.status === 'Pending'
-                          ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                          : 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
-                      }`}
-                    >
-                      {s.status}
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 text-slate-400 uppercase font-semibold text-[10px] dark:border-slate-800">
+                    <th className="py-3 px-2">Employee</th>
+                    <th className="py-3 px-2">Department</th>
+                    <th className="py-3 px-2">Requested Shift Slot</th>
+                    <th className="py-3 px-2">Requested Date</th>
+                    <th className="py-3 px-2">Reason</th>
+                    <th className="py-3 px-2">HR Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {employeeShiftView.map((s) => (
+                    <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                      <td className="py-3 px-2 font-bold text-slate-900 dark:text-white">{s.empName}</td>
+                      <td className="py-3 px-2 text-slate-600 dark:text-slate-300">{s.department}</td>
+                      <td className="py-3 px-2 font-semibold text-indigo-600 dark:text-indigo-400">
+                        {s.requestedShift || s.shiftName}
+                      </td>
+                      <td className="py-3 px-2 text-slate-500">{s.requestedDate || s.assignedDate}</td>
+                      <td className="py-3 px-2 text-slate-600 dark:text-slate-300 max-w-xs truncate">
+                        {getReasonText(s)}
+                      </td>
+                      <td className="py-3 px-2">
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
+                            s.status === 'Approved'
+                              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                              : s.status === 'Pending'
+                              ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                              : 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                          }`}
+                        >
+                          {s.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">My Shift Requests</h3>
+              <p className="text-xs text-slate-500">Track your submitted shift preferences and statuses.</p>
+            </div>
+          </div>
+
+          {employeeShiftView.length === 0 ? (
+            <div className="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-400">
+              No shift requests submitted yet.
+            </div>
+          ) : (
+            <div className="mt-4 space-y-3">
+              {employeeShiftView.map((req) => (
+                <div key={req.id || `${req.empId || currentEmpId || 'shift'}-${req.requestedDate || 'date'}`} className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-800/40">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="text-sm font-bold text-slate-900 dark:text-white">{req.requestedShift || req.shiftName}</div>
+                      <div className="text-[11px] text-slate-500">Requested: {req.requestedDate || req.assignedDate}</div>
+                    </div>
+                    <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
+                      req.status === 'Approved'
+                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                        : req.status === 'Pending'
+                        ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                        : 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                    }`}>
+                      {req.status}
                     </span>
-                  </td>
-                </tr>
+                  </div>
+                  <div className="mt-2 text-[11px] text-slate-600 dark:text-slate-300">
+                    Reason: {getReasonText(req)}
+                  </div>
+                </div>
               ))}
-            </tbody>
-          </table>
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
       {/* Submit Shift Request Modal */}
       {showRequestModal && (

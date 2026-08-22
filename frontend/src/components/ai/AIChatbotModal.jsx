@@ -1,25 +1,36 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Bot, Send, X, Sparkles, User, RefreshCw } from 'lucide-react';
+import { Bot, Send, X, Sparkles, User, RefreshCw, Copy, Download } from 'lucide-react';
 import { api } from '../../services/api';
 
-export const AIChatbotModal = ({ isOpen, onClose }) => {
+export const AIChatbotModal = ({ isOpen, onClose, userRole = 'EMPLOYEE', currentEmpId = null }) => {
   const [messages, setMessages] = useState([
     {
       id: '1',
       sender: 'ai',
-      text: 'Hello! I am your NEXUS Workforce AI Assistant. Ask me anything about headcount analytics, workforce capacity, payroll calculations, or HR compliance policies.',
+      text: userRole === 'HR_ADMIN'
+        ? 'Hello! I am your NEXUS Workforce AI Assistant. Ask me anything about headcount analytics, workforce capacity, payroll calculations, or HR compliance policies.'
+        : 'Hello! I am your NEXUS Employee Assistant. Ask me about your attendance, leave balance, upcoming shift, or payroll.',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
+  const [copyStatus, setCopyStatus] = useState('');
+  const [downloadStatus, setDownloadStatus] = useState('');
 
-  const suggestedPrompts = [
+  const suggestedPrompts = userRole === 'HR_ADMIN' ? [
     "Summarize workforce headcount by department",
     "Summarize attendance anomalies today",
     "What is the projected August payroll cost?",
     "Draft workforce expansion recommendations"
+  ] : [
+    "How is my attendance this month?",
+    "Do I have any attendance alerts?",
+    "What is my current leave balance?",
+    "What is my next shift?",
+    "Show my leave history",
+    "Explain my latest payroll information"
   ];
 
   useEffect(() => {
@@ -44,7 +55,9 @@ export const AIChatbotModal = ({ isOpen, onClose }) => {
     setIsLoading(true);
 
     try {
-      const response = await api.sendChatMessage(query, 'HR Administrator', undefined);
+      const roleLabel = userRole === 'HR_ADMIN' ? 'HR Administrator' : 'Employee';
+      const context = currentEmpId ? { empId: currentEmpId } : undefined;
+      const response = await api.sendChatMessage(query, roleLabel, context);
       const aiReplyText = response?.reply || response?.text || 'AI service responded without a usable message.';
 
       const aiMsg = {
@@ -68,6 +81,73 @@ export const AIChatbotModal = ({ isOpen, onClose }) => {
     }
   };
 
+  const buildConversationText = () => {
+    const header = ['NEXUS AI ASSISTANT', '==================', ''];
+    if (!messages || messages.length === 0) {
+      header.push('No messages.');
+      return header.join('\n');
+    }
+
+    const parts = [...header];
+    messages.forEach((msg) => {
+      const senderLabel = msg.sender === 'user' ? 'User:' : 'Nexus AI:';
+      parts.push(senderLabel);
+      parts.push(msg.text || '');
+      parts.push('');
+      parts.push('------------------');
+      parts.push('');
+    });
+    // remove trailing separator
+    while (parts.length > 0 && parts[parts.length - 1] === '') parts.pop();
+    return parts.join('\n');
+  };
+
+  const handleCopyChat = async () => {
+    try {
+      const text = buildConversationText();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
+      setCopyStatus('Copied!');
+      setTimeout(() => setCopyStatus(''), 2000);
+    } catch (err) {
+      console.error('Copy chat failed', err);
+      setCopyStatus('Copy failed');
+      setTimeout(() => setCopyStatus(''), 2000);
+    }
+  };
+
+  const handleDownloadChat = () => {
+    try {
+      const text = buildConversationText();
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const now = new Date();
+      const ts = now.toISOString().slice(0,19).replace(/:/g,'-');
+      const filename = `Nexus_AI_Chat_${ts}.txt`;
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      setDownloadStatus('Downloaded');
+      setTimeout(() => setDownloadStatus(''), 2000);
+    } catch (err) {
+      console.error('Download chat failed', err);
+      setDownloadStatus('Download failed');
+      setTimeout(() => setDownloadStatus(''), 2000);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-end bg-slate-900/50 backdrop-blur-xs p-4">
       <div className="flex h-[88vh] w-full max-w-lg flex-col rounded-2xl bg-white shadow-2xl dark:bg-slate-900 dark:text-white border border-slate-200 dark:border-slate-800">
@@ -86,9 +166,18 @@ export const AIChatbotModal = ({ isOpen, onClose }) => {
             </div>
           </div>
 
-          <button onClick={onClose} className="rounded-lg p-1.5 text-slate-300 hover:bg-slate-800 hover:text-white">
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={handleCopyChat} title="Copy chat" className="rounded-lg p-1.5 text-slate-300 hover:bg-slate-800 hover:text-white">
+              <Copy className="h-5 w-5" />
+            </button>
+            <button onClick={handleDownloadChat} title="Download chat" className="rounded-lg p-1.5 text-slate-300 hover:bg-slate-800 hover:text-white">
+              <Download className="h-5 w-5" />
+            </button>
+            <span className="text-[11px] text-slate-200 opacity-90">{copyStatus || downloadStatus ? (copyStatus || downloadStatus) : ''}</span>
+            <button onClick={onClose} className="rounded-lg p-1.5 text-slate-300 hover:bg-slate-800 hover:text-white">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         {/* Message Container */}

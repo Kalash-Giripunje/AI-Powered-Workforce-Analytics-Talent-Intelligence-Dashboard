@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { api } from '../../services/api';
 import {
   Users,
   Search,
@@ -22,6 +23,8 @@ import {
 
 export const EmployeeManagement = ({
   employees = [],
+  employeePagination = { total: 0, page: 1, size: 50, pages: 1 },
+  onRequestEmployees = null,
   onAddEmployee,
   onUpdateEmployee,
   employeesLoading = false,
@@ -31,6 +34,7 @@ export const EmployeeManagement = ({
   const [selectedDept, setSelectedDept] = useState('ALL');
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const searchTimerRef = React.useRef(null);
 
   // New Employee Form State
   const [newEmp, setNewEmp] = useState({
@@ -48,8 +52,33 @@ export const EmployeeManagement = ({
 
   const departments = ['ALL', 'Engineering', 'Human Resources', 'Finance & Payroll', 'Product Management', 'Operations'];
 
-  const empList = employees || [];
+  const employeePaginationMeta = employeePagination && typeof employeePagination === 'object'
+    ? employeePagination
+    : { total: 0, page: 1, size: 50, pages: 1 };
+  const pageSize = Number(employeePaginationMeta.size) || 50;
+  const currentPage = Number(employeePaginationMeta.page) || 1;
+  const totalEmployees = Number(employeePaginationMeta.total) || 0;
+  const totalPages = Number(employeePaginationMeta.pages) || 1;
+  const empList = Array.isArray(employees) ? employees : [];
   const q = (search || '').toLowerCase();
+
+  // When server-side request handler is available, trigger requests on search/department changes (debounced)
+  React.useEffect(() => {
+    if (!onRequestEmployees) return;
+    // debounce 400ms
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    const t = setTimeout(() => {
+      const params = {};
+      if (search && search.trim().length > 0) params.search = search.trim();
+      if (selectedDept && selectedDept !== 'ALL') params.department = selectedDept;
+      params.page = 1;
+      params.size = pageSize;
+      onRequestEmployees(params);
+    }, 400);
+    searchTimerRef.current = t;
+    return () => { clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, selectedDept, pageSize]);
   const filteredEmployees = empList.filter((emp) => {
     const fname = (emp.firstName || '').toString();
     const lname = (emp.lastName || '').toString();
@@ -157,7 +186,15 @@ export const EmployeeManagement = ({
           {employeesLoading ? (
             'Loading employees...'
           ) : (
-            <>Showing <span className="text-slate-900 dark:text-white font-bold">{filteredEmployees.length}</span> records</>
+            (() => {
+              const hasTotal = Number.isFinite(totalEmployees) && totalEmployees > 0;
+              if (hasTotal) {
+                const start = totalEmployees === 0 ? 0 : ((currentPage - 1) * pageSize) + 1;
+                const end = Math.min(currentPage * pageSize, totalEmployees);
+                return <>{`Showing ${start}–${end} of ${totalEmployees}`}</>;
+              }
+              return <>Showing <span className="text-slate-900 dark:text-white font-bold">{filteredEmployees.length}</span> records</>;
+            })()
           )}
         </div>
       </div>
@@ -185,12 +222,25 @@ export const EmployeeManagement = ({
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
             {filteredEmployees.map((emp) => (
               <tr
-                key={emp.empId}
-                onClick={() => setSelectedEmployee(emp)}
+                key={emp.empId || emp.EmpID}
+                onClick={async () => {
+                  try {
+                    // Fetch full profile for the clicked employee so related data (performance, payroll, AI) is available
+                    const empIdToFetch = emp.empId || emp.EmpID;
+                    const full = await api.getEmployeeById(empIdToFetch);
+                    // api client returns response.data via interceptor; ensure result is an object
+                    setSelectedEmployee(full || emp);
+                  } catch (err) {
+                    console.warn('Failed to fetch full employee profile, falling back to list item', err);
+                    setSelectedEmployee(emp);
+                  }
+                }
+                }
+
                 className="group cursor-pointer transition-all duration-200 hover:bg-indigo-50/60 dark:hover:bg-indigo-950/40"
               >
                 <td className="whitespace-nowrap px-4 py-3.5 font-mono font-bold text-indigo-600 dark:text-indigo-400">
-                  {emp.empId}
+                  {emp.empId || emp.EmpID}
                 </td>
                 <td className="whitespace-nowrap px-4 py-3.5">
                   <div className="flex items-center gap-3">
@@ -227,17 +277,16 @@ export const EmployeeManagement = ({
                 </td>
                 <td className="whitespace-nowrap px-4 py-3.5">
                   <span
-                    className={`rounded-full px-2.5 py-0.5 text-[10px] font-extrabold ${
-                      emp.attritionRisk === 'High'
-                        ? 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
-                        : emp.attritionRisk === 'Medium'
-                        ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
-                        : emp.attritionRisk === 'Low'
-                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
-                        : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
-                    }`}
+                    className={`rounded-full px-2.5 py-0.5 text-[10px] font-extrabold ${(() => {
+                      const r = emp.attritionRisk;
+                      if (r == null) return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
+                      const numeric = typeof r === 'number' ? r : (parseFloat(r) || 0);
+                      if (numeric >= 0.7) return 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300';
+                      if (numeric >= 0.4) return 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300';
+                      return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300';
+                    })()}`}
                   >
-                    {emp.attritionRisk ? `${emp.attritionRisk} Risk` : 'Not available'}
+                    {emp.attritionRisk != null ? `${(typeof emp.attritionRisk === 'number' ? Math.round(emp.attritionRisk * 100) : Math.round(Number(emp.attritionRisk || 0) * 100))}%` : 'Not available'}
                   </span>
                 </td>
                 <td className="whitespace-nowrap px-4 py-3.5 text-right">
@@ -249,6 +298,44 @@ export const EmployeeManagement = ({
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* Pagination Controls */}
+      <div className="mt-3 flex items-center justify-between">
+        <div className="text-xs text-slate-500">
+          Page {employeePagination.page} / {employeePagination.pages}
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              if (!onRequestEmployees) return;
+              const prev = Math.max(1, (employeePagination.page || 1) - 1);
+              const params = { page: prev, size: employeePagination.size };
+              if (search) params.search = search;
+              if (selectedDept && selectedDept !== 'ALL') params.department = selectedDept;
+              onRequestEmployees(params);
+            }}
+            disabled={(employeePagination.page || 1) <= 1}
+            className="rounded px-3 py-1 text-xs font-semibold bg-slate-100 disabled:opacity-50"
+          >
+            Previous
+          </button>
+          <div className="text-xs">{employeePagination.page} / {employeePagination.pages}</div>
+          <button
+            onClick={() => {
+              if (!onRequestEmployees) return;
+              const next = Math.min((employeePagination.pages || 1), (employeePagination.page || 1) + 1);
+              const params = { page: next, size: employeePagination.size };
+              if (search) params.search = search;
+              if (selectedDept && selectedDept !== 'ALL') params.department = selectedDept;
+              onRequestEmployees(params);
+            }}
+            disabled={(employeePagination.page || 1) >= (employeePagination.pages || 1)}
+            className="rounded px-3 py-1 text-xs font-semibold bg-slate-100 disabled:opacity-50"
+          >
+            Next
+          </button>
+        </div>
       </div>
 
       {/* Employee Detail Modal/Drawer */}
@@ -314,7 +401,11 @@ export const EmployeeManagement = ({
                   <div className="rounded-lg bg-white p-2.5 shadow-sm dark:bg-slate-900">
                     <span className="text-[10px] text-slate-400 block">Goals Completed</span>
                     <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">
-                      {selectedEmployee.goalsCompleted != null ? selectedEmployee.goalsCompleted : 'Not available'} / {selectedEmployee.totalGoals != null ? selectedEmployee.totalGoals : 'Not available'}
+                      {(() => {
+                        const left = selectedEmployee.goalsCompleted != null ? selectedEmployee.goalsCompleted : 'Not available';
+                        const total = (selectedEmployee.totalGoals != null && !isNaN(Number(selectedEmployee.totalGoals))) ? Number(selectedEmployee.totalGoals) : 100;
+                        return `${left} / ${total}`;
+                      })()}
                     </span>
                   </div>
                 </div>
@@ -381,7 +472,7 @@ export const EmployeeManagement = ({
               <div>
                 <h4 className="font-bold mb-2">Verified Skill Competencies</h4>
                 <div className="flex flex-wrap gap-1.5">
-                  {selectedEmployee.skills.map((skill, i) => (
+                  {(Array.isArray(selectedEmployee.skills) ? selectedEmployee.skills : []).map((skill, i) => (
                     <span key={i} className="rounded-md bg-indigo-50 px-2.5 py-1 font-semibold text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
                       {skill}
                     </span>

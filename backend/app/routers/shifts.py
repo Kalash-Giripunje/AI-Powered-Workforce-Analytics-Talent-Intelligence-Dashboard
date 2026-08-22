@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from typing import List, Optional
 
 from backend.app.models.schemas import (
@@ -6,8 +6,10 @@ from backend.app.models.schemas import (
     ShiftRequestResponse,
     ShiftStatusUpdate
 )
+from backend.app.database import get_database
 
 from backend.app.services.workforce_services import ShiftService
+from backend.app.routers.auth import require_authenticated_user, require_employee_self_or_hr, require_hr_admin, get_manager_team_emp_ids
 
 
 router = APIRouter(
@@ -21,17 +23,40 @@ router = APIRouter(
     response_model=List[ShiftRequestResponse]
 )
 async def get_shift_requests(
+    request: Request,
     status_filter: Optional[str] = Query(
         None,
         alias="status",
-        description="Filter by status (Pending, Approved, Rejected)"
-    )
+        description="Filter by status (Pending, Approved, Rejected, Not Requested)"
+    ),
+    emp_id: Optional[str] = Query(
+        None,
+        description="Employee ID filter. Employees may only query their own records."
+    ),
+    page: int = Query(1, ge=1, description="Page number for pagination"),
+    size: int = Query(50, ge=1, le=1000, description="Page size for pagination")
 ):
-    """Retrieve shift requests and swap applications."""
-
-    return await ShiftService.get_all(
-        status=status_filter
-    )
+    """Retrieve shift requests and swap applications with pagination."""
+    auth_user = await require_authenticated_user(request)
+    role = str(auth_user.get("role") or "").upper()
+    if role == "EMPLOYEE":
+        if emp_id and str(emp_id).strip() and str(emp_id).strip() != str(auth_user.get("empId") or "").strip():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not authorized to access another employee's shift requests."
+            )
+        return await ShiftService.get_all(
+            status=status_filter,
+            page=page,
+            size=size,
+            emp_id=str(auth_user.get("empId") or "").strip() or None,
+        )
+    if role == "MANAGER":
+        team_ids = await get_manager_team_emp_ids(auth_user)
+        if emp_id and str(emp_id).strip() and str(emp_id).strip() not in set(team_ids or []):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to access another employee's shift requests.")
+        return await ShiftService.get_all(status=status_filter, page=page, size=size, emp_ids=team_ids)
+    return await ShiftService.get_all(status=status_filter, page=page, size=size, emp_id=emp_id)
 
 
 @router.post(
@@ -40,12 +65,32 @@ async def get_shift_requests(
     status_code=status.HTTP_201_CREATED
 )
 async def submit_shift_request(
-    request: ShiftRequestBase
+    request: Request,
+    payload: ShiftRequestBase
 ):
     """Submit a shift swap or preference request."""
+    auth_user = await require_authenticated_user(request)
+    if auth_user.get("role") == "EMPLOYEE":
+        auth_emp_id = str(auth_user.get("empId") or "").strip()
+        if not auth_emp_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Employee profile could not be loaded."
+            )
+        if str(payload.empId or "").strip() != auth_emp_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not authorized to submit a shift request for another employee."
+            )
+        payload.empId = auth_emp_id
+    elif auth_user.get("role") == "MANAGER":
+        auth_emp_id = str(auth_user.get("empId") or "").strip()
+        team_ids = set(await get_manager_team_emp_ids(auth_user) or [])
+        if not auth_emp_id or str(payload.empId or "").strip() not in team_ids:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to submit a shift request for this employee.")
 
     try:
-        return await ShiftService.submit(request)
+        return await ShiftService.submit(payload)
 
     except ValueError as exc:
         raise HTTPException(
@@ -59,14 +104,37 @@ async def submit_shift_request(
     response_model=ShiftRequestResponse
 )
 async def update_shift_status(
+    request: Request,
     shift_id: str,
     update: ShiftStatusUpdate
 ):
+    auth_user = await require_authenticated_user(request)
+    role = str(auth_user.get("role") or "").upper()
+    if role not in {"HR_ADMIN", "MANAGER"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied. Manager or HR_ADMIN permissions required.")
 
-    updated = await ShiftService.update_status(
-        shift_id,
-        update
-    )
+    if role == "MANAGER":
+        db = get_database()
+        if db is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="MongoDB database is not connected.")
+        current = await db.shifts.find_one({"ShiftID": shift_id}, {"_id": 0})
+        if not current:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Shift request ID '{shift_id}' not found.")
+        team_ids = set(await get_manager_team_emp_ids(auth_user) or [])
+        emp_id = str(current.get("EmpID") or "").strip()
+        if emp_id not in team_ids:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to approve this shift request.")
+
+    try:
+        updated = await ShiftService.update_status(
+            shift_id,
+            update
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc)
+        ) from exc
 
     if not updated:
         raise HTTPException(

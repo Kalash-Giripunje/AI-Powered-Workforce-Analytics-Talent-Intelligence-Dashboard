@@ -15,18 +15,34 @@ import {
   Calendar
 } from 'lucide-react';
 
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell
+} from 'recharts';
+
 
 
 export const ExecutiveDashboard = ({
-  employees,
-  attendance,
-  leaves,
-  dashboardMetrics,
-  dashboardLoading,
-  dashboardError,
-  userRole,
-  onNavigate,
-  onOpenAIChat
+  employees = [],
+  attendance = [],
+  leaves = [],
+  dashboardMetrics = {},
+  dashboardLoading = false,
+  dashboardError = null,
+  userRole = 'EMPLOYEE',
+  onNavigate = () => {},
+  onOpenAIChat = () => {},
+  shifts = [],
+  payroll = [],
+  leaveBalance = {},
+  profile = null
 }) => {
   const metrics = dashboardMetrics || {};
   const formatCurrencyCompact = (value) => {
@@ -63,6 +79,143 @@ export const ExecutiveDashboard = ({
   const attritionRiskCount = Number.isFinite(Number(metrics.attritionRiskCount))
     ? Number(metrics.attritionRiskCount)
     : 0;
+
+  // Employee-specific personal dashboard
+  if (userRole === 'EMPLOYEE') {
+    const empId = (dashboardMetrics && dashboardMetrics.empId) || null; // fallback
+    // try to infer empId from attendance or leaves if profile not present
+    const deriveEmpId = (record) => record?.empId || record?.EmpID || record?.EmpId || record?.employeeId || null;
+    const inferredEmpId = empId || (attendance && attendance.length ? deriveEmpId(attendance[0]) : null);
+    const myEmpId = inferredEmpId || null;
+
+    // Build last 7 days labels
+    const days = Array.from({ length: 7 }).map((_, idx) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (6 - idx));
+      return d.toISOString().slice(0, 10);
+    });
+
+    const attendanceMap = days.map((day) => {
+      const records = (attendance || []).filter((r) => {
+        const rid = deriveEmpId(r);
+        const date = (r.date || r.Date || r.DateString || r.DateTime || r.RecordDate || '').slice(0, 10);
+        return rid && String(rid) === String(myEmpId) && date === day;
+      });
+      const present = records.filter((r) => {
+        const status = (r.AttendanceStatus || r.attendanceStatus || r.status || '').toString().toLowerCase();
+        return status === 'present' || (r.workingHours || r.WorkingHours || 0) > 0;
+      }).length;
+      const late = records.filter((r) => r.LateArrival === true || r.lateArrival === true).length;
+      const absent = present === 0 ? 1 : 0; // simple indicator per day
+      return { date: day, present, late, absent };
+    });
+
+    const totalPresent = attendanceMap.reduce((s, it) => s + it.present, 0);
+    const totalLate = attendanceMap.reduce((s, it) => s + it.late, 0);
+    const totalDays = attendanceMap.length;
+    const attendanceRateEmp = totalDays ? `${Math.round((totalPresent / totalDays) * 100)}%` : 'N/A';
+
+    // Leave summary
+    const myLeaves = (leaves || []).filter((l) => {
+      const lid = deriveEmpId(l);
+      return lid && String(lid) === String(myEmpId);
+    });
+
+    // Next shift
+    const myNextShift = (Array.isArray(shifts) ? shifts : []).filter((s) => {
+      const sid = deriveEmpId(s);
+      return sid && String(sid) === String(myEmpId);
+    }).sort((a,b) => (a.ShiftDate || a.shiftDate || '') > (b.ShiftDate || b.shiftDate || '') ? 1 : -1)[0];
+
+    // Latest payroll
+    const myPayroll = (Array.isArray(payroll) ? payroll : []).filter((p) => {
+      const pid = deriveEmpId(p);
+      return pid && String(pid) === String(myEmpId);
+    }).sort((a,b) => (b.PayrollMonth || b.payrollMonth || '') > (a.PayrollMonth || a.payrollMonth || '') ? 1 : -1)[0];
+
+    return (
+      <div className="space-y-6">
+        <div className="rounded-2xl bg-white p-6 shadow-md">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-xl font-bold">Good day{profile && profile.name ? `, ${profile.name}` : ''}</h3>
+              <p className="text-sm text-slate-500">Employee Self-Service</p>
+            </div>
+            <div className="text-right">
+              <div className="text-xs text-slate-500">Employee ID</div>
+              <div className="text-sm font-semibold">{myEmpId || 'N/A'}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-xl border bg-white p-4">
+            <div className="text-xs text-slate-500">Attendance Rate</div>
+            <div className="mt-2 text-2xl font-bold">{attendanceRateEmp}</div>
+            <div className="text-[11px] text-slate-400">Last 7 days</div>
+          </div>
+
+          <div className="rounded-xl border bg-white p-4">
+            <div className="text-xs text-slate-500">Leave Balance</div>
+            <div className="mt-2 text-sm">
+              {leaveBalance ? (
+                <div className="space-y-1 text-sm text-slate-700">
+                  <div>Casual: {leaveBalance.casualLeave?.remaining ?? '-'}</div>
+                  <div>Sick: {leaveBalance.sickLeave?.remaining ?? '-'}</div>
+                  <div>Earned: {leaveBalance.earnedLeave?.remaining ?? '-'}</div>
+                </div>
+              ) : (
+                <div className="text-sm text-slate-500">No data</div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-xl border bg-white p-4">
+            <div className="text-xs text-slate-500">Next Shift</div>
+            <div className="mt-2 text-sm font-semibold">{myNextShift ? `${myNextShift.ShiftName || myNextShift.shiftName || 'Shift'} • ${myNextShift.ShiftDate || myNextShift.shiftDate || 'N/A'}` : 'No upcoming shifts'}</div>
+          </div>
+
+          <div className="rounded-xl border bg-white p-4">
+            <div className="text-xs text-slate-500">Latest Payroll</div>
+            <div className="mt-2 text-sm font-semibold">{myPayroll ? `Net: ${myPayroll.NetSalary ?? myPayroll.netSalary ?? myPayroll.NetPay ?? 'N/A'}` : 'No payroll records'}</div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div className="rounded-xl border bg-white p-4">
+            <div className="text-xs font-bold text-slate-600 mb-2">Attendance (Last 7 days)</div>
+            <div style={{ height: 180 }}>
+              <ResponsiveContainer>
+                <LineChart data={attendanceMap}>
+                  <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip />
+                  <Line type="monotone" dataKey="present" stroke="#4f46e5" strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="rounded-xl border bg-white p-4">
+            <div className="text-xs font-bold text-slate-600 mb-2">Leaves (Recent)</div>
+            {myLeaves.length === 0 ? (
+              <div className="text-sm text-slate-500">No recent leave records</div>
+            ) : (
+              <div className="space-y-2 text-sm">
+                {myLeaves.slice(0,5).map((l,idx) => (
+                  <div key={idx} className="rounded p-2 border border-slate-100">
+                    <div className="font-semibold">{l.LeaveType || l.leaveType || l.type || 'Leave'}</div>
+                    <div className="text-xs text-slate-500">{(l.StartDate || l.startDate) || (l.Start || 'N/A')} → {(l.EndDate || l.endDate) || (l.End || 'N/A')}</div>
+                    <div className="text-xs text-slate-500">Status: {l.Status || l.status || 'N/A'}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -153,7 +306,7 @@ export const ExecutiveDashboard = ({
             <span className="text-[10px] font-bold text-emerald-600">{attendanceRate === 'N/A' ? 'Unavailable' : 'Live Data'}</span>
           </div>
           <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
-            Facial & Web verified
+            Verified (method)
           </p>
         </div>
 
@@ -302,18 +455,18 @@ export const ExecutiveDashboard = ({
             ))}
           </div>
 
-          {/* Quick Verification Highlights */}
+          {/* Attendance status highlights */}
           <div className="mt-5 grid grid-cols-3 gap-3 rounded-xl border border-slate-100 bg-slate-50/80 p-3 text-center dark:border-slate-800/60 dark:bg-slate-800/40">
             <div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase">Biometric Verified</div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase">Verified</div>
               <div className="text-sm font-black text-slate-900 dark:text-white mt-0.5">84%</div>
             </div>
             <div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase">GPS Geofenced</div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase">Server-verified</div>
               <div className="text-sm font-black text-slate-900 dark:text-white mt-0.5">12%</div>
             </div>
             <div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase">QR Check-in</div>
+              <div className="text-[10px] font-bold text-slate-400 uppercase">Attendance Sync</div>
               <div className="text-sm font-black text-slate-900 dark:text-white mt-0.5">4%</div>
             </div>
           </div>
@@ -338,20 +491,32 @@ export const ExecutiveDashboard = ({
           <div className="mt-4 space-y-3">
             {employees
               .slice(0, 3)
-              .map((emp) => (
+              .map((emp, idx) => {
+                const rowKey = emp?.empId || `emp-${idx}`;
+                const locationPart = typeof emp?.location === 'string' && emp.location.trim() !== ''
+                  ? emp.location.split('-')[0]
+                  : (emp?.location || 'N/A');
+
+                const avatar = emp?.avatar && typeof emp.avatar === 'string' && emp.avatar.trim() !== '' ? emp.avatar : null;
+
+                return (
                 <div
-                  key={emp.empId}
+                  key={rowKey}
                   className="group rounded-xl border border-slate-100 bg-slate-50/50 p-3 transition-all duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-sm dark:border-slate-800/60 dark:bg-slate-800/30 dark:hover:border-indigo-800"
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2.5">
-                      <img src={emp.avatar} alt={emp.firstName} className="h-9 w-9 rounded-full object-cover ring-2 ring-indigo-500/20" />
+                      {avatar ? (
+                        <img src={avatar} alt={emp?.firstName || ''} className="h-9 w-9 rounded-full object-cover ring-2 ring-indigo-500/20" />
+                      ) : (
+                        <div className="h-9 w-9 rounded-full bg-indigo-100 flex items-center justify-center font-bold text-indigo-700">{emp?.firstName?.[0] || emp?.empId?.slice(-2) || 'NA'}</div>
+                      )}
                       <div>
                         <div className="text-xs font-bold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                          {emp.firstName} {emp.lastName}
+                          {emp?.firstName || ''} {emp?.lastName || ''}
                         </div>
                         <div className="text-[10px] text-slate-500 dark:text-slate-400">
-                          {emp.jobRole} • {emp.department}
+                          {emp?.jobRole || '—'} • {emp?.department || '—'}
                         </div>
                       </div>
                     </div>
@@ -359,11 +524,12 @@ export const ExecutiveDashboard = ({
                       <div className="text-xs font-black text-emerald-600 dark:text-emerald-400">
                         98% Score
                       </div>
-                      <div className="text-[10px] text-slate-400">{emp.location.split('-')[0]}</div>
+                      <div className="text-[10px] text-slate-400">{locationPart}</div>
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
           </div>
 
           <button
@@ -389,38 +555,40 @@ export const ExecutiveDashboard = ({
           </div>
 
           <div className="mt-4 space-y-3">
-            {pendingLeaves.map((leave) => (
-              <div
-                key={leave.id}
-                className="group flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50/70 p-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-amber-200 hover:shadow-sm dark:border-slate-800/60 dark:bg-slate-800/40 dark:hover:border-amber-900"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="rounded-xl bg-amber-100 p-2.5 text-amber-600 transition-transform duration-200 group-hover:scale-110 dark:bg-amber-950 dark:text-amber-400">
-                    <Calendar className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <div className="text-xs font-bold text-slate-900 dark:text-white">
-                      {leave.empName} <span className="text-[10px] text-slate-400">({leave.department})</span>
+            {pendingLeaves.map((leave, idx) => {
+              const rowKey = leave?.id || `${leave?.empId || 'unknown'}-${idx}`;
+              return (
+                <div
+                  key={rowKey}
+                  className="group flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50/70 p-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-amber-200 hover:shadow-sm dark:border-slate-800/60 dark:bg-slate-800/40 dark:hover:border-amber-900"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="rounded-xl bg-amber-100 p-2.5 text-amber-600 transition-transform duration-200 group-hover:scale-110 dark:bg-amber-950 dark:text-amber-400">
+                      <Calendar className="h-4 w-4" />
                     </div>
-                    <div className="text-[11px] text-slate-500">
-                      {leave.leaveType} • {leave.days} day(s) • {leave.startDate} to {leave.endDate}
+                    <div>
+                      <div className="text-xs font-bold text-slate-900 dark:text-white">
+                        {leave?.empName || 'N/A'} <span className="text-[10px] text-slate-400">({leave?.department || '—'})</span>
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {leave?.leaveType || '—'} • {leave?.days ?? 0} day(s) • {leave?.startDate || '—'} to {leave?.endDate || '—'}
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => onNavigate('leave')}
-                    className="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white shadow-sm transition-all hover:bg-emerald-700 hover:shadow"
-                  >
-                    Approve
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => onNavigate('leave')}
+                      className="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white shadow-sm transition-all hover:bg-emerald-700 hover:shadow"
+                    >
+                      Approve
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
-
         {/* Executive Action Shortcuts */}
         <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm transition-all duration-300 hover:shadow-md dark:border-slate-800/80 dark:bg-slate-900">
           <h3 className="border-b border-slate-100 pb-3.5 text-sm font-extrabold text-slate-900 dark:border-slate-800 dark:text-white">

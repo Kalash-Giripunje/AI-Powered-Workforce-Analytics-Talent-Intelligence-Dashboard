@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from typing import List, Optional
 
 from backend.app.models.schemas import (
@@ -8,6 +8,7 @@ from backend.app.models.schemas import (
 )
 from backend.app.services.workforce_services import LeaveService
 from backend.app.database import get_database
+from backend.app.routers.auth import require_authenticated_user, require_employee_self_or_hr, require_hr_admin, get_manager_team_emp_ids
 
 
 router = APIRouter(
@@ -18,19 +19,46 @@ router = APIRouter(
 
 @router.get("", response_model=List[LeaveRequestBase])
 async def get_leave_requests(
+    request: Request,
     status_filter: Optional[str] = Query(
         None,
         alias="status",
         description="Filter by status (Pending, Approved, Rejected)"
-    )
+    ),
+    emp_id: Optional[str] = Query(
+        None,
+        description="Employee ID filter. Employees may only query their own records."
+    ),
+    page: int = Query(1, ge=1, description="Page number for pagination"),
+    size: int = Query(50, ge=1, le=1000, description="Page size for pagination")
 ):
-    """Retrieve leave applications."""
-    return await LeaveService.get_all(status=status_filter)
+    """Retrieve leave applications with pagination."""
+    auth_user = await require_authenticated_user(request)
+    role = str(auth_user.get("role") or "").upper()
+    if role == "EMPLOYEE":
+        if emp_id and str(emp_id).strip() and str(emp_id).strip() != str(auth_user.get("empId") or "").strip():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not authorized to access another employee's leave records."
+            )
+        return await LeaveService.get_all(
+            status=status_filter,
+            page=page,
+            size=size,
+            emp_id=str(auth_user.get("empId") or "").strip() or None,
+        )
+    if role == "MANAGER":
+        team_ids = await get_manager_team_emp_ids(auth_user)
+        if emp_id and str(emp_id).strip() and str(emp_id).strip() not in set(team_ids or []):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to access another employee's leave records.")
+        return await LeaveService.get_all(status=status_filter, page=page, size=size, emp_ids=team_ids)
+    return await LeaveService.get_all(status=status_filter, page=page, size=size, emp_id=emp_id)
 
 
 @router.get("/balance", response_model=LeaveBalances)
-async def get_leave_balance():
+async def get_leave_balance(request: Request):
     """Aggregate leave balances from the real MongoDB leaves collection."""
+    auth_user = await require_authenticated_user(request)
 
     db = get_database()
 
@@ -40,9 +68,15 @@ async def get_leave_balance():
             detail="MongoDB database is not connected."
         )
 
+    query = {}
+    if auth_user.get("role") == "EMPLOYEE":
+        if not auth_user.get("empId"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Employee profile could not be loaded.")
+        query["EmpID"] = auth_user["empId"]
+
     leave_documents = await db.leaves.find(
-        {},
-        {"_id": 0, "LeaveType": 1, "LeaveBalance": 1}
+        query,
+        {"_id": 0, "LeaveType": 1, "LeaveBalance": 1, "EmpID": 1}
     ).to_list(length=5000)
 
     def sum_leave_values(match_strings):
@@ -90,22 +124,77 @@ async def get_leave_balance():
     response_model=LeaveRequestBase,
     status_code=status.HTTP_201_CREATED
 )
-async def submit_leave_request(request: LeaveRequestBase):
+async def submit_leave_request(request: Request, payload: LeaveRequestBase):
     """Submit a new leave request."""
-    return await LeaveService.submit(request)
+    auth_user = await require_authenticated_user(request)
+    if auth_user.get("role") == "EMPLOYEE":
+        auth_emp_id = str(auth_user.get("empId") or "").strip()
+        if not auth_emp_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Employee profile could not be loaded."
+            )
+        if str(payload.empId or "").strip() != auth_emp_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not authorized to submit leave for another employee."
+            )
+        payload.empId = auth_emp_id
+    elif auth_user.get("role") == "MANAGER":
+        auth_emp_id = str(auth_user.get("empId") or "").strip()
+        team_ids = set(await get_manager_team_emp_ids(auth_user) or [])
+        if not auth_emp_id or str(payload.empId or "").strip() not in team_ids:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to submit leave for this employee.")
+
+    try:
+        return await LeaveService.submit(payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc)
+        ) from exc
 
 
 @router.put("/{leave_id}/status", response_model=LeaveRequestBase)
 async def update_leave_status(
+    request: Request,
     leave_id: str,
     update: LeaveStatusUpdate
 ):
     """Approve or reject leave request."""
+    auth_user = await require_authenticated_user(request)
+    role = str(auth_user.get("role") or "").upper()
+    if role not in {"HR_ADMIN", "MANAGER"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied. Manager or HR_ADMIN permissions required.")
 
-    updated = await LeaveService.update_status(
-        leave_id,
-        update
-    )
+    if role == "MANAGER":
+        db = get_database()
+        if db is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="MongoDB database is not connected.")
+        current = await db.leaves.find_one({"_id": leave_id}, {"_id": 0})
+        if not current:
+            try:
+                from bson import ObjectId
+                current = await db.leaves.find_one({"_id": ObjectId(leave_id)}, {"_id": 0})
+            except Exception:
+                current = None
+        if not current:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Leave request ID '{leave_id}' not found.")
+        team_ids = set(await get_manager_team_emp_ids(auth_user) or [])
+        emp_id = str(current.get("EmpID") or "").strip()
+        if emp_id not in team_ids:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to approve this leave request.")
+
+    try:
+        updated = await LeaveService.update_status(
+            leave_id,
+            update
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc)
+        ) from exc
 
     if not updated:
         raise HTTPException(

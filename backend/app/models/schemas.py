@@ -35,7 +35,8 @@ class EmployeeBase(BaseModel):
     jobRole: Optional[str] = Field(default=None, description="Job role title")
     designation: Optional[str] = Field(default=None, description="Designation title when available")
     jobLevel: Optional[int] = Field(default=None, ge=1, le=10, description="Job level")
-    managerId: Optional[str] = Field(default=None, description="Reporting manager ID")
+    managerId: Optional[str] = Field(default=None, description="Reporting manager ID (legacy compatibility)")
+    managerEmpId: Optional[str] = Field(default=None, description="Canonical reporting manager employee ID")
     managerName: Optional[str] = Field(default=None, description="Manager name when available")
     location: Optional[str] = Field(default=None, description="Office or work location")
     status: Optional[str] = Field(default=None, description="Employment status")
@@ -53,8 +54,22 @@ class EmployeeBase(BaseModel):
     emergencyContact: Optional[EmergencyContact] = Field(default=None, description="Emergency contact information when present")
     address: Optional[str] = Field(default=None, description="Residential address when present")
 
+    # Optional performance & AI fields (enriched by GET /employees/{id})
+    performanceScore: Optional[int] = Field(default=None, description="Overall performance score (0-100)")
+    productivityScore: Optional[int] = Field(default=None, description="Productivity percentage")
+    kpiCompletionRate: Optional[int] = Field(default=None, description="KPI completion percentage")
+    goalsCompleted: Optional[int] = Field(default=None, description="Number of goals completed")
+    totalGoals: Optional[int] = Field(default=None, description="Total goals assigned")
+    promotionRecommended: Optional[bool] = Field(default=None, description="Promotion recommended flag")
+    aiFeedback: Optional[str] = Field(default=None, description="AI manager evaluation or recommendation")
+    lastPayrollMonth: Optional[str] = Field(default=None, description="Month of the latest payroll record")
+    lastNetPay: Optional[float] = Field(default=None, description="Net pay amount of the latest payroll record")
+    attritionRisk: Optional[float] = Field(default=None, description="AI-predicted attrition risk (0-1) or risk score")
+
 class EmployeeCreate(EmployeeBase):
-    pass
+    # Allow empId to be optionally omitted during creation so the server can generate one.
+    # Keep all other EmployeeBase validations.
+    empId: Optional[str] = None
 
 class EmployeeUpdate(BaseModel):
     firstName: Optional[str] = None
@@ -66,6 +81,7 @@ class EmployeeUpdate(BaseModel):
     designation: Optional[str] = None
     jobLevel: Optional[int] = None
     managerId: Optional[str] = None
+    managerEmpId: Optional[str] = None
     managerName: Optional[str] = None
     location: Optional[str] = None
     status: Optional[str] = None
@@ -94,14 +110,25 @@ class AttendanceBase(BaseModel):
     status: Optional[str] = None
     isAnomaly: Optional[bool] = None
     anomalyReason: Optional[str] = None
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    gpsVerified: Optional[bool] = None
+    distanceFromOffice: Optional[float] = None
+    geofenceStatus: Optional[str] = None
 
 class AttendanceCheckIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     empId: str
     checkInTime: Optional[str] = None
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
 
 class AttendanceCheckOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     empId: str
     checkOutTime: Optional[str] = None
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
 
 # --------------------------------------------------------------------------
 # Leave Schemas
@@ -163,12 +190,15 @@ class ShiftRequestResponse(BaseModel):
     requestedShift: Optional[str] = None
     requestedDate: Optional[str] = None
     reason: Optional[str] = None
-    status: Optional[Literal["Pending", "Approved", "Rejected"]] = None
+    status: Optional[Literal["Pending", "Approved", "Rejected", "Not Requested"]] = None
     appliedOn: Optional[str] = None
+    approverComments: Optional[str] = None
+    approverName: Optional[str] = None
 
 
 class ShiftStatusUpdate(BaseModel):
     status: Literal["Pending", "Approved", "Rejected"]
+    approverComments: Optional[str] = None
 
 # --------------------------------------------------------------------------
 # Timesheet Schemas

@@ -29,7 +29,7 @@ import {
   AreaChart,
   Area
 } from 'recharts';
-import { api } from '../../services/api';
+import apiClient, { api } from '../../services/api';
 
 export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => {
   const [selectedCategory, setSelectedCategory] = useState('ALL');
@@ -61,12 +61,12 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
   ];
 
   const attendanceTrendData = [
-    { day: 'Mon', onTime: 96, biometric: 88, gpsGeofenced: 92 },
-    { day: 'Tue', onTime: 98, biometric: 92, gpsGeofenced: 95 },
-    { day: 'Wed', onTime: 94, biometric: 86, gpsGeofenced: 89 },
-    { day: 'Thu', onTime: 97, biometric: 91, gpsGeofenced: 94 },
-    { day: 'Fri', onTime: 95, biometric: 89, gpsGeofenced: 91 },
-    { day: 'Sat', onTime: 99, biometric: 95, gpsGeofenced: 97 }
+    { day: 'Mon', onTime: 96, verification: 88, gpsGeofenced: 92 },
+    { day: 'Tue', onTime: 98, verification: 92, gpsGeofenced: 95 },
+    { day: 'Wed', onTime: 94, verification: 86, gpsGeofenced: 89 },
+    { day: 'Thu', onTime: 97, verification: 91, gpsGeofenced: 94 },
+    { day: 'Fri', onTime: 95, verification: 89, gpsGeofenced: 91 },
+    { day: 'Sat', onTime: 99, verification: 95, gpsGeofenced: 97 }
   ];
 
   const overtimeDeptData = [
@@ -112,7 +112,41 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
     try {
       const response = await api.generateReport(payload);
       setGeneratedReport(response || null);
-      setDownloadSuccess(response?.reportName || 'Custom report generated');
+
+      // If backend provided a download URL, fetch the file (blob) and trigger browser download
+      const downloadUrl = response?.downloadUrl;
+      if (downloadUrl) {
+        try {
+          const blob = await apiClient.get(downloadUrl, { responseType: 'blob' });
+          if (!blob || (typeof blob.size === 'number' && blob.size === 0)) {
+            throw new Error('Empty file received');
+          }
+
+          const fmt = (payload.format || 'PDF').toLowerCase();
+          const ext = fmt === 'xlsx' ? 'xlsx' : fmt === 'csv' ? 'csv' : fmt === 'json' ? 'json' : 'pdf';
+          const safeName = (response?.reportName || 'report').replace(/[^a-z0-9\-_\. ]/gi, '_');
+          const filename = `${safeName}.${ext}`;
+
+          const objectUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = objectUrl;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(objectUrl);
+
+          setDownloadSuccess(response?.reportName || 'Custom report downloaded');
+          setTimeout(() => setDownloadSuccess(null), 4000);
+        } catch (downloadErr) {
+          console.error('Report download failed:', downloadErr);
+          const message = downloadErr?.response?.data?.detail || downloadErr.message || 'Failed to download report';
+          setGenerationError(message);
+        }
+      } else {
+        // Backend did not provide download URL — treat as generated only
+        setGenerationError('Report generated but no download URL was provided by the server.');
+      }
     } catch (err) {
       console.error('Failed to generate report:', err);
       const message = err?.response?.data?.detail || err.message || 'Failed to generate report';
@@ -124,8 +158,43 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
   }
 
   const handleDownload = (title) => {
+    // Legacy simple banner — keep for small non-download actions
     setDownloadSuccess(title);
     setTimeout(() => setDownloadSuccess(null), 3000);
+  };
+
+  // Snowflake sync action (not a file download) — show an informative message instead
+  const handleSnowflakeSync = () => {
+    setDownloadSuccess('Snowflake Full Workforce Sync initiated');
+    setTimeout(() => setDownloadSuccess(null), 4000);
+  };
+
+  // Download a pre-generated report by invoking the download endpoint directly
+  const handleDownloadPreGenerated = async (report) => {
+    setDownloadSuccess(null);
+    setGenerationError(null);
+    try {
+      const fmt = (report.format || 'JSON').toUpperCase();
+      const downloadUrl = `/reports/download?format=${encodeURIComponent(fmt)}&department=${encodeURIComponent('All')}&dateRange=${encodeURIComponent('Current Month')}`;
+      const blob = await apiClient.get(downloadUrl, { responseType: 'blob' });
+      if (!blob || (typeof blob.size === 'number' && blob.size === 0)) throw new Error('Empty file received');
+      const ext = fmt === 'XLSX' ? 'xlsx' : fmt === 'CSV' ? 'csv' : fmt === 'JSON' ? 'json' : 'pdf';
+      const safeName = (report.title || 'report').replace(/[^a-z0-9\-_\. ]/gi, '_');
+      const filename = `${safeName}.${ext}`;
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objectUrl);
+      setDownloadSuccess(report.title || 'Report downloaded');
+      setTimeout(() => setDownloadSuccess(null), 4000);
+    } catch (err) {
+      console.error('Pre-generated report download failed:', err);
+      setGenerationError(err?.message || 'Failed to download report');
+    }
   };
 
   const filteredReports = reportSummary.filter((report) => {
@@ -149,7 +218,7 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => handleDownload('Snowflake Full Workforce Sync')}
+            onClick={handleSnowflakeSync}
             className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white shadow-md hover:bg-indigo-700"
           >
             <Database className="h-4 w-4" />
@@ -162,7 +231,14 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
       {downloadSuccess && (
         <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3.5 text-xs font-bold text-emerald-900 dark:border-emerald-900/40 dark:bg-emerald-950/40 dark:text-emerald-200">
           <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-          {generatedReport ? `Generated: ${generatedReport.reportName}` : `Successfully exported "${downloadSuccess}"! File downloaded to local system.`}
+          {generatedReport ? (
+            `Generated: ${generatedReport.reportName}`
+          ) : (
+            // If the message indicates a non-download action (e.g., sync initiated), show it directly
+            (typeof downloadSuccess === 'string' && downloadSuccess.toLowerCase().includes('initiated'))
+              ? downloadSuccess
+              : `Successfully exported "${downloadSuccess}"! File downloaded to local system.`
+          )}
         </div>
       )}
 
@@ -381,12 +457,11 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
               </div>
             </div>
 
-            {/* Attendance & Biometric Verification Trends Area Chart */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            {/* Attendance trends area chart */}            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
               <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">Daily Biometric & GPS Verification Velocity (%)</h3>
-                  <p className="text-xs text-slate-500">Weekly compliance rates for Facial AI & GPS Geofence check-ins</p>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">Daily Attendance Trends (%)</h3>
+                  <p className="text-xs text-slate-500">Weekly attendance rates and workforce activity patterns</p>
                 </div>
                 <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
                   97.4% Avg Compliance
@@ -401,7 +476,7 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
                         <stop offset="5%" stopColor="#10b981" stopOpacity={0.8}/>
                         <stop offset="95%" stopColor="#10b981" stopOpacity={0.0}/>
                       </linearGradient>
-                      <linearGradient id="colorBiometric" x1="0" y1="0" x2="0" y2="1">
+                      <linearGradient id="colorServer" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#6366f1" stopOpacity={0.8}/>
                         <stop offset="95%" stopColor="#6366f1" stopOpacity={0.0}/>
                       </linearGradient>
@@ -411,7 +486,7 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
                     <YAxis domain={[80, 100]} tick={{ fontSize: 10 }} />
                     <Tooltip />
                     <Area type="monotone" dataKey="onTime" stroke="#10b981" fillOpacity={1} fill="url(#colorOnTime)" name="On-Time Check-in %" />
-                    <Area type="monotone" dataKey="biometric" stroke="#6366f1" fillOpacity={1} fill="url(#colorBiometric)" name="Facial/Biometric %" />
+                    <Area type="monotone" dataKey="verification" stroke="#6366f1" fillOpacity={1} fill="url(#colorServer)" name="Attendance Sync %" />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -519,7 +594,7 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
 
                 <div className="flex items-center gap-2 sm:flex-col sm:items-end">
                   <button
-                    onClick={() => handleDownload(report.title || 'Report')}
+                    onClick={() => handleDownloadPreGenerated(report)}
                     className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-indigo-700"
                   >
                     <Download className="h-4 w-4" />
