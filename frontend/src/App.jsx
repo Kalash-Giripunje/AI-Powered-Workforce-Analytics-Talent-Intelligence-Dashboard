@@ -20,6 +20,7 @@ import { ExecutiveDashboard } from './components/dashboard/ExecutiveDashboard';
 import { ManagerDashboard } from './components/dashboard/ManagerDashboard';
 import { EmployeeManagement } from './components/employees/EmployeeManagement';
 import { AttendanceManagement } from './components/attendance/AttendanceManagement';
+import { EmployeeAttendanceSelfService } from './components/attendance/EmployeeAttendanceSelfService';
 import { LeaveManagement } from './components/leave/LeaveManagement';
 import { ShiftManagement } from './components/shifts/ShiftManagement';
 import { TimesheetManagement } from './components/timesheets/TimesheetManagement';
@@ -825,6 +826,49 @@ export function App() {
     }
   };
 
+  const handleEmployeeCheckIn = async (options = {}) => {
+    const effectiveEmployeeId = currentEmpId || profile?.empId || profile?.EmpID || profile?.EmpId || null;
+    if (!effectiveEmployeeId) {
+      throw new Error('Employee identity is not available.');
+    }
+
+    const selectedMethod = String(options.verificationMethod || 'DIRECT').trim();
+    const hasLocation = Number.isFinite(Number(options.latitude)) && Number.isFinite(Number(options.longitude));
+
+    const payload = {
+      empId: effectiveEmployeeId,
+      verificationMethod: selectedMethod,
+      verificationStatus: options.verificationStatus || (selectedMethod === 'DIRECT' ? 'Directly Approved' : 'Verified'),
+      workMode: options.workMode || profile?.workMode || 'OFFICE',
+      ...(hasLocation ? { latitude: Number(options.latitude), longitude: Number(options.longitude) } : {}),
+    };
+
+    const record = await api.checkIn(payload);
+    await fetchAttendance({ employeeId: effectiveEmployeeId, page: 1, size: 50 });
+    return record;
+  };
+
+  const handleEmployeeCheckOut = async (options = {}) => {
+    const effectiveEmployeeId = currentEmpId || profile?.empId || profile?.EmpID || profile?.EmpId || null;
+    if (!effectiveEmployeeId) {
+      throw new Error('Employee identity is not available.');
+    }
+
+    const selectedMethod = String(options.verificationMethod || 'DIRECT').trim();
+    const hasLocation = Number.isFinite(Number(options.latitude)) && Number.isFinite(Number(options.longitude));
+
+    const payload = {
+      empId: effectiveEmployeeId,
+      verificationMethod: selectedMethod,
+      verificationStatus: options.verificationStatus || (selectedMethod === 'DIRECT' ? 'Directly Approved' : 'Verified'),
+      ...(hasLocation ? { latitude: Number(options.latitude), longitude: Number(options.longitude) } : {}),
+    };
+
+    const record = await api.checkOut(payload);
+    await fetchAttendance({ employeeId: effectiveEmployeeId, page: 1, size: 50 });
+    return record;
+  };
+
   const handleApplyLeave = async (newLeave) => {
     const effectiveEmployeeId = newLeave?.empId || selectedLeaveEmployeeId || currentEmpId;
     if (!effectiveEmployeeId) {
@@ -1173,7 +1217,17 @@ export function App() {
             />
           )}
 
-          {activeTab === 'attendance' && (
+          {activeTab === 'attendance' && userRole === 'EMPLOYEE' && (
+            <EmployeeAttendanceSelfService
+              employeeId={currentEmpId}
+              employeeName={currentEmpName}
+              attendanceRecords={attendance}
+              onCheckIn={handleEmployeeCheckIn}
+              onCheckOut={handleEmployeeCheckOut}
+            />
+          )}
+
+          {activeTab === 'attendance' && userRole !== 'EMPLOYEE' && (
             <AttendanceManagement
               attendanceRecords={attendance}
               attendanceLoading={attendanceLoading}

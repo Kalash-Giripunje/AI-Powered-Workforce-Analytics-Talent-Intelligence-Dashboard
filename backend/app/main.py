@@ -94,17 +94,59 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With", "X-CSRF-Token"],
 )
 
-# Health Check Endpoint
+# Health Check Endpoint — enhanced for Vercel diagnostics
 @app.get("/api/health", tags=["Health"])
 async def health_check():
-    """System health check endpoint."""
+    """System health check — shows DB connectivity and config status."""
+    import os
+    from backend.app.database import get_database, connect_to_mongo
+
+    db = get_database()
+    db_status = "unknown"
+    db_error = None
+    db_name = settings.DATABASE_NAME or os.environ.get("DATABASE_NAME", "")
+    mongo_url_set = bool(settings.MONGODB_URL)
+
+    # Attempt lazy connect if not yet connected (cold start on Vercel)
+    if db is None and mongo_url_set:
+        try:
+            await connect_to_mongo()
+            db = get_database()
+        except Exception as e:
+            db_error = str(e)
+
+    if db is not None:
+        try:
+            await db.command("ping")
+            db_status = "connected"
+        except Exception as e:
+            db_status = "error"
+            db_error = str(e)
+    elif not mongo_url_set:
+        db_status = "no_url_configured"
+    else:
+        db_status = "disconnected"
+        if not db_error:
+            db_error = "DB instance is None after connect attempt"
+
     return {
         "status": "online",
         "system": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "framework": "FastAPI (Python 3.11+)",
-        "database": "MongoDB Motor Async Driver"
+        "database": {
+            "status": db_status,
+            "name": db_name,
+            "mongo_url_configured": mongo_url_set,
+            "error": db_error,
+        },
+        "env": {
+            "JWT_SECRET_KEY_set": bool(settings.JWT_SECRET_KEY),
+            "AUTH_BOOTSTRAP_PASSWORD_set": bool(settings.AUTH_BOOTSTRAP_PASSWORD),
+            "AUTOMATION_ENABLED": settings.AUTOMATION_ENABLED,
+        }
     }
+
 
 # Include All Feature Routers
 app.include_router(auth.router, prefix=settings.API_V1_STR)
