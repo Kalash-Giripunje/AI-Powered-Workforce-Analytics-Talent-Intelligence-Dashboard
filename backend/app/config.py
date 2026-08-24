@@ -6,12 +6,13 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api"
 
-    # These must come from the .env file
-    MONGODB_URL: str
-    DATABASE_NAME: str
+    # These must come from the .env file (or Vercel environment variables)
+    MONGODB_URL: str = ""
+    DATABASE_NAME: str = "enterprise_workforce_db"
 
     # Browser-facing CORS allowlist for the trusted local development frontend origins used by this project.
     CORS_ALLOWED_ORIGINS: str = (
+        "http://127.0.0.1:4173,http://localhost:4173,"
         "http://127.0.0.1:5173,http://localhost:5173,"
         "http://127.0.0.1:5174,http://localhost:5174,"
         "http://127.0.0.1:5175,http://localhost:5175,"
@@ -32,7 +33,8 @@ class Settings(BaseSettings):
     APP_TIMEZONE: str = "UTC"
 
     # Automation engine configuration
-    AUTOMATION_ENABLED: bool = True
+    # Disable automation scheduler by default in serverless environments (Vercel)
+    AUTOMATION_ENABLED: bool = False
     # Attendance reconciliation: run every N minutes when enabled
     ATTENDANCE_RECONCILIATION_INTERVAL_MINUTES: int = 15
 

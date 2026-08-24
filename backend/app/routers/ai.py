@@ -439,3 +439,194 @@ async def ai_insights_handler(payload: AIInsightRequest):
         ),
         "simulated": False
     }
+
+
+WORKFORCE_HIRING_PLANS: List[Dict[str, Any]] = []
+
+
+def _get_department_risk(coverage: float) -> str:
+    if coverage < 18:
+        return 'Critical'
+    if coverage < 30:
+        return 'Elevated'
+    if coverage < 45:
+        return 'Moderate'
+    return 'Low'
+
+
+def _build_department_summary(employees: List[Dict[str, Any]], employment_count: int, attendance_rate: int, leave_rate: float, scenario: Dict[str, Any]) -> List[Dict[str, Any]]:
+    dept_map: Dict[str, Dict[str, Any]] = {}
+    for employee in employees:
+        dept_name = employee.get('Department') or employee.get('department') or 'Unassigned'
+        if dept_name not in dept_map:
+            dept_map[dept_name] = {'name': dept_name, 'count': 0, 'roles': [], 'skills': []}
+        dept_map[dept_name]['count'] += 1
+        role = employee.get('JobRole') or employee.get('jobRole') or employee.get('Designation') or 'General'
+        dept_map[dept_name]['roles'].append(role)
+        for skill in employee.get('skills') or []:
+            dept_map[dept_name]['skills'].append(skill)
+
+    summary = []
+    for dept in dept_map.values():
+        base_coverage = round((dept['count'] / max(1, employment_count)) * 100)
+        planning_boost = ((scenario.get('plannedHiring', 0) or 0) * (dept['count'] / max(1, employment_count))) * 0.35
+        coverage = min(100, round(base_coverage + planning_boost))
+        risk = _get_department_risk(coverage)
+        if risk == 'Critical':
+            issue = 'Department coverage is below target and workforce pressure is likely to impact operations.'
+            action = 'Prioritize external hiring and internal transfer support.'
+            suggested_hires = max(1, int(round((employment_count * 0.18) + (coverage / 10))))
+        elif risk == 'Elevated':
+            issue = 'Operational demand is rising faster than available capacity.'
+            action = 'Add focused hiring and support internal mobility.'
+            suggested_hires = max(1, int(round((dept['count'] * 0.12) + (scenario.get('overtimeThreshold', 0) or 0) / 7)))
+        elif risk == 'Moderate':
+            issue = 'Current staffing is near planned capacity with limited resilience.'
+            action = 'Upskill the existing team and align hiring priorities.'
+            suggested_hires = max(0, int(round((scenario.get('plannedHiring', 0) or 0) * (dept['count'] / max(1, employment_count)))))
+        else:
+            issue = 'Department capacity is stable and operating within healthy coverage.'
+            action = 'Monitor and retain current capability.'
+            suggested_hires = 0
+
+        role_counts: Dict[str, int] = {}
+        for role in dept['roles']:
+            role_counts[role] = role_counts.get(role, 0) + 1
+        priority_roles = [k for k, _ in sorted(role_counts.items(), key=lambda item: item[1], reverse=True)[:3]] or ['Operations', 'Support', 'Leadership']
+
+        skill_counts: Dict[str, int] = {}
+        for skill in dept['skills']:
+            skill_counts[skill] = skill_counts.get(skill, 0) + 1
+        recommended_skills = [k for k, _ in sorted(skill_counts.items(), key=lambda item: item[1], reverse=True)[:3]] or ['Workforce planning', 'Cross-training', 'Team leadership']
+
+        summary.append({
+            'name': dept['name'],
+            'count': dept['count'],
+            'coverage': coverage,
+            'risk': risk,
+            'issue': issue,
+            'recommendedAction': action,
+            'suggestedHires': suggested_hires,
+            'priorityRoles': priority_roles,
+            'recommendedSkills': recommended_skills,
+            'internalMatches': [
+                {'name': f'Internal candidate {idx + 1}', 'role': role, 'match': min(96, max(60, 70 + idx*8))}
+                for idx, role in enumerate(priority_roles[:3])
+            ],
+            'staffPressure': max(0, round((1 - (coverage / 100)) * 100)),
+            'attendanceRate': attendance_rate,
+            'leaveRate': leave_rate,
+        })
+
+    return sorted(summary, key=lambda item: item['coverage'])
+
+
+@router.post('/ai/workforce-simulate')
+async def simulate_workforce_plan(payload: Dict[str, Any]):
+    """Return deterministic scenario output used by the AI Workforce Planning dashboard."""
+    employees = payload.get('employees') or []
+    attendance = payload.get('attendance') or []
+    leaves = payload.get('leaves') or []
+    payroll = payload.get('payroll') or []
+    scenario = {
+        'plannedHiring': int(float(payload.get('plannedHiring', 10) or 10)),
+        'overtimeThreshold': float(payload.get('overtimeThreshold', 8) or 8),
+        'attritionRate': float(payload.get('attritionRate', 0.05) or 0.05),
+    }
+
+    employment_count = len(employees)
+    attendance_rate = 96
+    if attendance:
+        present = sum(1 for item in attendance if str(item.get('AttendanceStatus') or item.get('status') or '').lower() in {'present', 'late', 'on-time', 'checked-in'})
+        attendance_rate = round((present / len(attendance)) * 100)
+
+    leave_rate = 0.05
+    if leaves and employment_count:
+        now = __import__('datetime').datetime.now()
+        active = 0
+        for item in leaves:
+            start = item.get('StartDate') or item.get('startDate') or item.get('from') or item.get('start')
+            end = item.get('EndDate') or item.get('endDate') or item.get('to') or item.get('end')
+            status = str(item.get('Status') or item.get('status') or '').lower()
+            if not start or not end:
+                continue
+            try:
+                sd = __import__('datetime').datetime.fromisoformat(start)
+                ed = __import__('datetime').datetime.fromisoformat(end)
+                if sd <= now <= ed and status in {'approved', 'approved-by-manager'}:
+                    active += 1
+            except Exception:
+                try:
+                    sd = __import__('datetime').datetime.strptime(start, '%Y-%m-%d')
+                    ed = __import__('datetime').datetime.strptime(end, '%Y-%m-%d')
+                    if sd <= now <= ed and status in {'approved', 'approved-by-manager'}:
+                        active += 1
+                except Exception:
+                    continue
+        leave_rate = max(0.01, active / max(1, employment_count))
+
+    effective_capacity = max(0, round(employment_count * (1 - leave_rate) * (attendance_rate / 100)))
+    overtime_capacity = round(employment_count * (scenario['overtimeThreshold'] / 40))
+    projected_after = effective_capacity + scenario['plannedHiring'] + overtime_capacity
+    projected_shortage = max(0, round((employment_count * (1 - scenario['attritionRate'])) - projected_after))
+    department_summaries = _build_department_summary(employees, employment_count, attendance_rate, leave_rate, scenario)
+    actions = []
+    if projected_shortage > 0:
+        actions.append(f'Add {max(1, int(round(projected_shortage / 2)))} hires to close the projected capacity gap.')
+    if scenario['overtimeThreshold'] > 14:
+        actions.append('Reduce overtime pressure in the next 30 days to protect productivity and retention.')
+    if scenario['attritionRate'] > 0.08:
+        actions.append('Retention and manager coaching should be prioritized because attrition risk is above the healthy baseline.')
+    if not actions:
+        actions.append('Maintain the current staffing model and continue monitoring risk in the next planning cycle.')
+
+    recommendation = {
+        'summary': (
+            f'Scenario outcome remains {"under pressure" if projected_shortage > 0 else "balanced"} '
+            f'with {projected_after} effective capacity against a baseline of {employment_count} employees.'
+        ),
+        'actions': actions,
+        'score': min(95, max(40, round((projected_after / max(1, employment_count + 10)) * 100 + (100 - attendance_rate) * 0.3))),
+    }
+
+    return {
+        'projectedAfterScenario': projected_after,
+        'effectiveCapacity': effective_capacity,
+        'projectedShortage': projected_shortage,
+        'scenario': scenario,
+        'departmentSummaries': department_summaries,
+        'recommendation': recommendation,
+        'attendanceRate': attendance_rate,
+        'leaveRate': leave_rate,
+        'employees': employees,
+        'payroll': payroll,
+    }
+
+
+@router.get('/ai/hiring-plans')
+async def get_hiring_plans():
+    """Return stored hiring-plan records for the AI Workforce Planning module."""
+    return WORKFORCE_HIRING_PLANS
+
+
+@router.post('/ai/hiring-plans')
+async def create_hiring_plan(payload: Dict[str, Any]):
+    """Persist a hiring-plan proposal in the module memory store."""
+    plan = {
+        'planId': payload.get('planId') or f'HP-{__import__("uuid").uuid4().hex[:8].upper()}',
+        'department': payload.get('department') or 'General',
+        'createdBy': payload.get('createdBy') or 'HR Admin',
+        'createdAt': payload.get('createdAt') or __import__('datetime').datetime.utcnow().isoformat(),
+        'scenarioSnapshot': payload.get('scenarioSnapshot') or {},
+        'riskLevel': payload.get('riskLevel') or 'Moderate',
+        'recommendedHires': int(payload.get('recommendedHires') or 0),
+        'priorityRoles': payload.get('priorityRoles') or [],
+        'recommendedSkills': payload.get('recommendedSkills') or [],
+        'internalMatches': payload.get('internalMatches') or [],
+        'timeline': payload.get('timeline') or '30 days',
+        'status': payload.get('status') or 'Draft',
+        'currentCoverage': payload.get('currentCoverage') or 0,
+        'aiRationale': payload.get('aiRationale') or 'Deterministic staffing plan based on current workforce coverage and risk.',
+    }
+    WORKFORCE_HIRING_PLANS.insert(0, plan)
+    return plan

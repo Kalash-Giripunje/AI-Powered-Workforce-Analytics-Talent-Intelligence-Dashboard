@@ -1,7 +1,9 @@
 import math
+import re
 import uuid
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple, Union
 from datetime import datetime, timezone
 
 from backend.app.database import get_database
@@ -175,6 +177,24 @@ def normalize_attendance(
         d["latitude"] = d["Latitude"]
     if "Longitude" in d and "longitude" not in d:
         d["longitude"] = d["Longitude"]
+    if "WorkMode" in d and "workMode" not in d:
+        d["workMode"] = d["WorkMode"]
+    if "WorkContext" in d and "workContext" not in d:
+        d["workContext"] = d["WorkContext"]
+    if "AllowedVerificationMethods" in d and "allowedVerificationMethods" not in d:
+        d["allowedVerificationMethods"] = d["AllowedVerificationMethods"]
+    if "VerificationMethod" in d and "verificationMethod" not in d:
+        d["verificationMethod"] = d["VerificationMethod"]
+    if "VerificationStatus" in d and "verificationStatus" not in d:
+        d["verificationStatus"] = d["VerificationStatus"]
+    if "Verification" in d and "verification" not in d:
+        d["verification"] = d["Verification"]
+    if "LocationAudit" in d and "locationAudit" not in d:
+        d["locationAudit"] = d["LocationAudit"]
+    if "AttendanceException" in d and "attendanceException" not in d:
+        d["attendanceException"] = d["AttendanceException"]
+    if "ReviewStatus" in d and "reviewStatus" not in d:
+        d["reviewStatus"] = d["ReviewStatus"]
 
     if employee:
         first_name = employee.get("firstName")
@@ -229,12 +249,21 @@ def normalize_leave(doc: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             d["days"] = None
 
-    # Prefer RequestID as public id for leaves, otherwise fall back to MongoDB _id if present
+    # Ensure a stable canonical API-facing id for leave records.
+    # Prefer the MongoDB _id when available (canonical identifier). Expose any legacy RequestID
+    # separately as `requestId` for display-only purposes. This guarantees the frontend always
+    # receives `id` as the canonical identifier to use for update/delete operations.
     if "id" not in d:
-        if d.get("RequestID"):
-            d["id"] = str(d.get("RequestID"))
-        elif d.get("_id"):
+        if d.get("_id"):
             d["id"] = str(d.get("_id"))
+        elif d.get("RequestID"):
+            # Fallback to legacy RequestID only when _id is missing (rare)
+            d["id"] = str(d.get("RequestID"))
+
+    # Always expose the legacy RequestID (if present) as requestId for UI/display but do not
+    # treat it as the canonical route identifier.
+    if "requestId" not in d and d.get("RequestID"):
+        d["requestId"] = str(d.get("RequestID"))
 
     # Map Reason (DB) -> reason (API)
     if "reason" not in d and d.get("Reason") is not None:
@@ -253,6 +282,17 @@ def normalize_leave(doc: Dict[str, Any]) -> Dict[str, Any]:
     # ManagerComments -> approverComments
     if "approverComments" not in d and d.get("ManagerComments") is not None:
         d["approverComments"] = d.get("ManagerComments")
+
+    for field_name, legacy_name in {
+        "decisionByUserId": "decisionByUserId",
+        "decisionByEmpId": "decisionByEmpId",
+        "decisionByName": "decisionByName",
+        "decisionRole": "decisionRole",
+        "decisionAt": "decisionAt",
+        "decisionComments": "decisionComments",
+    }.items():
+        if field_name not in d and legacy_name in d and d.get(legacy_name) is not None:
+            d[field_name] = d[legacy_name]
 
     return d
 
@@ -316,6 +356,17 @@ def normalize_shift(
         d["approverComments"] = d["ManagerComments"]
     if "ApproverComments" in d and "approverComments" not in d:
         d["approverComments"] = d["ApproverComments"]
+
+    for field_name, legacy_name in {
+        "decisionByUserId": "decisionByUserId",
+        "decisionByEmpId": "decisionByEmpId",
+        "decisionByName": "decisionByName",
+        "decisionRole": "decisionRole",
+        "decisionAt": "decisionAt",
+        "decisionComments": "decisionComments",
+    }.items():
+        if field_name not in d and legacy_name in d and d.get(legacy_name) is not None:
+            d[field_name] = d[legacy_name]
 
     if "Approver" in d and "approverName" not in d:
         d["approverName"] = d["Approver"]
@@ -464,17 +515,33 @@ def normalize_notification(doc: Dict[str, Any]) -> Dict[str, Any]:
     if "EmpID" in d and "empId" not in d:
         d["empId"] = d["EmpID"]
 
+    if "Title" in d and "title" not in d:
+        d["title"] = d["Title"]
+
     if "Type" in d and "type" not in d:
         d["type"] = d["Type"]
+
+    if "notificationType" not in d and "Type" in d:
+        d["notificationType"] = d["Type"]
 
     if "Message" in d and "message" not in d:
         d["message"] = d["Message"]
 
+    if "Status" in d and "status" not in d:
+        d["status"] = d["Status"]
+
     if "Status" in d and "isRead" not in d:
         d["isRead"] = str(d["Status"]).lower() == "read"
+    elif "isRead" in d and "status" not in d:
+        d["status"] = "Read" if bool(d["isRead"]) else "Unread"
 
     if "NotificationDate" in d and "timestamp" not in d:
         d["timestamp"] = d["NotificationDate"]
+
+    if "relatedEntityType" not in d and "relatedEntityType" in d:
+        d["relatedEntityType"] = d["relatedEntityType"]
+    if "relatedEntityId" not in d and "relatedEntityId" in d:
+        d["relatedEntityId"] = d["relatedEntityId"]
 
     if "title" not in d and "type" in d:
         d["title"] = d["type"]
@@ -482,9 +549,11 @@ def normalize_notification(doc: Dict[str, Any]) -> Dict[str, Any]:
     if "priority" not in d:
         d["priority"] = None
 
+    if "metadata" not in d:
+        d["metadata"] = {}
+
     if "id" not in d and "_id" in d:
         d["id"] = str(d["_id"])
-        # Avoid leaking the raw MongoDB _id in the API response — normalize to 'id' only
         d.pop("_id", None)
 
     return d
@@ -1233,6 +1302,128 @@ class EmployeeService:
         return result.deleted_count > 0
 
 
+def _holiday_date_set() -> set[str]:
+    holiday_file = Path(__file__).resolve().parents[1] / "data" / "holidays.json"
+    try:
+        if not holiday_file.exists():
+            return set()
+        payload = __import__("json").loads(holiday_file.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            return set()
+        dates: set[str] = set()
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            value = item.get("date") or item.get("Date") or item.get("holidayDate") or item.get("day")
+            if value:
+                text = str(value).strip()[:10]
+                if text:
+                    dates.add(text)
+        return dates
+    except Exception:
+        return set()
+
+
+class AttendanceBusinessDayService:
+    @staticmethod
+    def _normalize_iso_date(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+            try:
+                datetime.strptime(text[:10], "%Y-%m-%d")
+                return text[:10]
+            except ValueError:
+                pass
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            return dt.date().isoformat()
+        except ValueError:
+            return None
+
+    @staticmethod
+    def is_holiday(date_value: Optional[str]) -> bool:
+        normalized = AttendanceBusinessDayService._normalize_iso_date(date_value)
+        if not normalized:
+            return False
+        return normalized in _holiday_date_set()
+
+    @staticmethod
+    def is_weekly_off(date_value: Optional[str]) -> bool:
+        normalized = AttendanceBusinessDayService._normalize_iso_date(date_value)
+        if not normalized:
+            return False
+        try:
+            return datetime.strptime(normalized, "%Y-%m-%d").weekday() == 6
+        except ValueError:
+            return False
+
+    @staticmethod
+    def is_working_day(date_value: Optional[str]) -> bool:
+        normalized = AttendanceBusinessDayService._normalize_iso_date(date_value)
+        if not normalized:
+            return False
+        return not AttendanceBusinessDayService.is_holiday(normalized) and not AttendanceBusinessDayService.is_weekly_off(normalized)
+
+    @staticmethod
+    def get_business_day_range(start_date: Optional[str], end_date: Optional[str]) -> Dict[str, Any]:
+        start = AttendanceBusinessDayService._normalize_iso_date(start_date)
+        end = AttendanceBusinessDayService._normalize_iso_date(end_date)
+        if not start and not end:
+            return {
+                "startDate": None,
+                "endDate": None,
+                "workingDays": 0,
+                "holidayCount": 0,
+                "weeklyOffCount": 0,
+                "totalDays": 0,
+            }
+        if not start:
+            start = end
+        if not end:
+            end = start
+        if start and end and start > end:
+            start, end = end, start
+        try:
+            start_dt = datetime.strptime(start, "%Y-%m-%d")
+            end_dt = datetime.strptime(end, "%Y-%m-%d")
+            total_days = 0
+            working_days = 0
+            holiday_count = 0
+            weekly_off_count = 0
+            current = start_dt
+            while current <= end_dt:
+                iso = current.strftime("%Y-%m-%d")
+                total_days += 1
+                if AttendanceBusinessDayService.is_holiday(iso):
+                    holiday_count += 1
+                if AttendanceBusinessDayService.is_weekly_off(iso):
+                    weekly_off_count += 1
+                if AttendanceBusinessDayService.is_working_day(iso):
+                    working_days += 1
+                current = current + __import__("datetime").timedelta(days=1)
+            return {
+                "startDate": start,
+                "endDate": end,
+                "workingDays": working_days,
+                "holidayCount": holiday_count,
+                "weeklyOffCount": weekly_off_count,
+                "totalDays": total_days,
+            }
+        except ValueError:
+            return {
+                "startDate": start,
+                "endDate": end,
+                "workingDays": 0,
+                "holidayCount": 0,
+                "weeklyOffCount": 0,
+                "totalDays": 0,
+            }
+
+
 # ==========================================================================
 # 2. Attendance Service
 # ==========================================================================
@@ -1256,8 +1447,15 @@ class AttendanceService:
         size: int = 50,
         employee_emp_id: Optional[str] = None,
         employee_emp_ids: Optional[List[str]] = None,
-        date: Optional[str] = None
-    ) -> Tuple[List[Dict[str, Any]], int]:
+        employee_id: Optional[str] = None,
+        date: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        include_summary: bool = False,
+    ) -> Union[
+        Tuple[List[Dict[str, Any]], int],
+        Tuple[List[Dict[str, Any]], int, Dict[str, Any]],
+    ]:
 
         db = get_database()
 
@@ -1266,44 +1464,46 @@ class AttendanceService:
                 "MongoDB database is not connected."
             )
 
-        # ---------------------------------------------------------
-        # Build employee query (we page employees, then merge attendance)
-        # ---------------------------------------------------------
         employee_query: Dict[str, Any] = {}
 
-        # If employee_emp_id or employee_emp_ids is provided, restrict results to those employee records
         if employee_emp_ids:
-            employee_query["EmpID"] = {"$in": [str(item).strip() for item in employee_emp_ids if str(item).strip()]}
+            normalized_emp_ids = [str(item).strip() for item in employee_emp_ids if str(item).strip()]
+            if normalized_emp_ids:
+                employee_query["EmpID"] = {"$in": normalized_emp_ids}
         elif employee_emp_id:
             employee_query["EmpID"] = employee_emp_id
 
-        # Department filter applies to employee collection
+        if employee_id:
+            normalized_employee_id = str(employee_id).strip()
+            if normalized_employee_id:
+                if employee_query.get("EmpID") is None:
+                    employee_query["EmpID"] = normalized_employee_id
+                elif isinstance(employee_query.get("EmpID"), dict):
+                    employee_query["EmpID"]["$in"] = [normalized_employee_id] if normalized_employee_id not in employee_query["EmpID"].get("$in", []) else employee_query["EmpID"]["$in"]
+                else:
+                    employee_query["EmpID"] = normalized_employee_id
+
         if department and department.lower() != "all":
             employee_query["Department"] = {
                 "$regex": f"^{department}$",
                 "$options": "i"
             }
 
-        # ---------------------------------------------------------
-        # Total employees matching the employee-level filters
-        # ---------------------------------------------------------
         total_employees = await db.employees.count_documents(employee_query)
 
-        # Pagination for employee page
         skip = (page - 1) * size
-
         employee_cursor = db.employees.find(
             employee_query,
             {"_id": 0}
         ).skip(skip).limit(size)
-
         employee_docs = await employee_cursor.to_list(length=size)
 
-        # No employees on this page
         if not employee_docs:
+            empty_summary = AttendanceService._build_summary([], total_employees, start_date, end_date, date)
+            if include_summary:
+                return [], total_employees, empty_summary
             return [], total_employees
 
-        # Build normalized employee lookup for enrichment
         employee_lookup: Dict[str, Dict[str, Any]] = {}
         emp_ids: List[str] = []
         for emp in employee_docs:
@@ -1312,22 +1512,25 @@ class AttendanceService:
                 employee_lookup[emp_id] = normalize_employee(emp)
                 emp_ids.append(emp_id)
 
-        # ---------------------------------------------------------
-        # Fetch attendance records for this employee page and requested date
-        # ---------------------------------------------------------
         attendance_query: Dict[str, Any] = {"EmpID": {"$in": emp_ids}}
+        if start_date or end_date:
+            date_filter: Dict[str, Any] = {}
+            if start_date:
+                date_filter["$gte"] = AttendanceBusinessDayService._normalize_iso_date(start_date) or str(start_date)
+            if end_date:
+                date_filter["$lte"] = AttendanceBusinessDayService._normalize_iso_date(end_date) or str(end_date)
+            if date_filter:
+                attendance_query["Date"] = date_filter
+        elif date:
+            normalized_date = AttendanceBusinessDayService._normalize_iso_date(date) or str(date)
+            attendance_query["Date"] = normalized_date
 
-        if date:
-            attendance_query["Date"] = date
-
-        # For non-Absence status filters, constrain attendance query to reduce data
         if status and status.lower() != "all":
             if status.lower() != "absent":
                 attendance_query["AttendanceStatus"] = {
                     "$regex": f"^{status}$",
                     "$options": "i"
                 }
-            # If status == 'absent', do not add AttendanceStatus filter because absence is lack of attendance record
 
         cursor = db.attendance.find(attendance_query, {"_id": 0})
         attendance_documents = await cursor.to_list(length=None)
@@ -1338,17 +1541,8 @@ class AttendanceService:
             if aid:
                 attendance_lookup[aid] = a
 
-        # ---------------------------------------------------------
-        # Merge: for each employee in requested page, produce an attendance-like record
-        # ---------------------------------------------------------
         merged_items: List[Dict[str, Any]] = []
-
-        # Determine default date string for absent synthetic entries
-        if date:
-            target_date = date
-        else:
-            # use UTC date string to be consistent with service conventions
-            target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        target_date = AttendanceBusinessDayService._normalize_iso_date(date) or (datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
         for emp in employee_docs:
             eid = emp.get("EmpID")
@@ -1356,21 +1550,23 @@ class AttendanceService:
             att_doc = attendance_lookup.get(eid)
             if att_doc:
                 merged_items.append(normalize_attendance(att_doc, emp_norm))
-            else:
-                # Synthesize a read-only absent representation (do not persist to DB)
-                synthetic = {
-                    "EmpID": eid,
-                    "Date": target_date,
-                    "CheckIn": None,
-                    "CheckOut": None,
-                    "WorkingHours": 0,
-                    "AttendanceStatus": "Absent",
-                }
-                merged_items.append(normalize_attendance(synthetic, emp_norm))
+                continue
 
-        # ---------------------------------------------------------
-        # Apply status filter on merged items (if requested)
-        # ---------------------------------------------------------
+            if date and AttendanceBusinessDayService.is_holiday(target_date):
+                continue
+            if date and AttendanceBusinessDayService.is_weekly_off(target_date):
+                continue
+
+            synthetic = {
+                "EmpID": eid,
+                "Date": target_date,
+                "CheckIn": None,
+                "CheckOut": None,
+                "WorkingHours": 0,
+                "AttendanceStatus": "Absent",
+            }
+            merged_items.append(normalize_attendance(synthetic, emp_norm))
+
         if status and status.lower() != "all":
             filtered = []
             for item in merged_items:
@@ -1379,7 +1575,71 @@ class AttendanceService:
                     filtered.append(item)
             merged_items = filtered
 
+        summary = AttendanceService._build_summary(merged_items, total_employees, start_date, end_date, date)
+        if include_summary:
+            return merged_items, total_employees, summary
         return merged_items, total_employees
+
+    @staticmethod
+    def _build_summary(
+        merged_items: List[Dict[str, Any]],
+        total_employees: int,
+        start_date: Optional[str],
+        end_date: Optional[str],
+        date: Optional[str],
+    ) -> Dict[str, Any]:
+        effective_start = AttendanceBusinessDayService._normalize_iso_date(start_date) or AttendanceBusinessDayService._normalize_iso_date(date)
+        effective_end = AttendanceBusinessDayService._normalize_iso_date(end_date) or AttendanceBusinessDayService._normalize_iso_date(date)
+        if not effective_start and not effective_end:
+            effective_start = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            effective_end = effective_start
+        if effective_start and effective_end and effective_start > effective_end:
+            effective_start, effective_end = effective_end, effective_start
+
+        business = AttendanceBusinessDayService.get_business_day_range(effective_start, effective_end)
+        working_days = int(business.get("workingDays") or 0)
+        holiday_count = int(business.get("holidayCount") or 0)
+        weekly_off_count = int(business.get("weeklyOffCount") or 0)
+
+        present_count = 0
+        late_count = 0
+        currently_working = 0
+        checked_out = 0
+        for item in merged_items:
+            item_status = str(item.get("status") or item.get("AttendanceStatus") or "").strip().lower()
+            check_in = item.get("checkIn") or item.get("CheckIn")
+            check_out = item.get("checkOut") or item.get("CheckOut")
+            if item_status == "late":
+                late_count += 1
+                present_count += 1
+            elif item_status == "present":
+                present_count += 1
+            elif item_status in {"working", "currently working"}:
+                currently_working += 1
+            elif check_in and not check_out:
+                currently_working += 1
+            if check_out:
+                checked_out += 1
+
+        total_working_opportunities = working_days * max(total_employees, 0)
+        if total_working_opportunities <= 0 and (date or start_date or end_date):
+            total_working_opportunities = max(total_employees, 0)
+
+        absent_count = max(0, total_working_opportunities - present_count)
+        attendance_rate = (present_count / total_working_opportunities * 100.0) if total_working_opportunities else 0.0
+
+        return {
+            "totalActiveEmployees": max(total_employees, 0),
+            "present": present_count,
+            "absent": absent_count,
+            "late": late_count,
+            "currentlyWorking": currently_working,
+            "checkedOut": checked_out,
+            "totalWorkingDays": working_days,
+            "holidayCount": holiday_count,
+            "weeklyOffCount": weekly_off_count,
+            "attendanceRate": round(attendance_rate, 2),
+        }
 
     # ----------------------------------------------------------------------
     # GET ATTENDANCE ANOMALIES
@@ -1500,6 +1760,122 @@ class AttendanceService:
         return office_latitude, office_longitude, radius_meters
 
     @staticmethod
+    def _normalize_verification_method(value: Optional[str]) -> str:
+        if value is None:
+            return ""
+        method = str(value).strip()
+        if not method:
+            return ""
+        normalized = re.sub(r"[^A-Z0-9]+", "_", method.upper()).strip("_")
+        aliases = {
+            "DIRECT_CHECK_IN_CHECK_OUT": "DIRECT",
+            "DIRECT_CHECK_IN": "DIRECT",
+            "DIRECT_CHECK_OUT": "DIRECT",
+            "DIRECT_ATTENDANCE": "DIRECT",
+            "DIRECT_CHECKIN": "DIRECT",
+            "DIRECT_CHECKOUT": "DIRECT",
+            "QR_KIOSK": "QR",
+            "LOCATION_VERIFICATION": "GPS",
+            "FACIAL_RECOGNITION": "FACIAL",
+            "BIOMETRIC_VERIFICATION": "BIOMETRIC",
+            "REMOTE_CHECK_IN": "REMOTE",
+            "STANDARD_CHECK_IN": "STANDARD",
+            "MOBILE_FIELD_GPS": "MOBILE",
+        }
+        return aliases.get(normalized, normalized)
+
+    @staticmethod
+    def _evaluate_attendance_policy(employee: Dict[str, Any], date_str: str) -> Dict[str, Any]:
+        """Determine today's effective attendance policy for the given employee.
+
+        Returns a policy dict with keys:
+          - work_mode
+          - geofence_required (bool)
+          - gps_audit_required (bool)
+          - allowed_methods (list)
+          - primary_method
+          - requires_manager_approval (bool)
+          - policy_message
+        """
+        # Resolve work mode from employee record; default to OFFICE when missing or invalid
+        raw_mode = (employee or {}).get("work_mode") or employee.get("WorkMode") if employee else None
+        if raw_mode is None:
+            work_mode = "OFFICE"
+        else:
+            work_mode = str(raw_mode).strip().upper()
+            if not work_mode:
+                work_mode = "OFFICE"
+
+        # Default policy values
+        policy = {
+            "work_mode": work_mode,
+            "geofence_required": False,
+            "gps_audit_required": False,
+            "allowed_methods": ["STANDARD", "DIRECT"],
+            "primary_method": "STANDARD",
+            "requires_manager_approval": False,
+            "policy_message": "Default attendance policy applied.",
+        }
+
+        if work_mode == "OFFICE":
+            policy.update({
+                "geofence_required": True,
+                "gps_audit_required": True,
+                "allowed_methods": ["GPS", "FACIAL", "BIOMETRIC", "QR", "DIRECT"],
+                "primary_method": "GPS",
+                "requires_manager_approval": False,
+                "policy_message": "Office attendance requires geofence verification (GPS) unless the employee explicitly selects the direct attendance option.",
+            })
+        elif work_mode in {"REMOTE", "WFH"}:
+            policy.update({
+                "geofence_required": False,
+                "gps_audit_required": True,
+                "allowed_methods": ["REMOTE", "FACIAL", "STANDARD", "DIRECT"],
+                "primary_method": "REMOTE",
+                "requires_manager_approval": False,
+                "policy_message": "Remote/Work-from-home attendance allowed. GPS may be captured for audit but will not be validated against the office geofence unless GPS is explicitly chosen.",
+            })
+        elif work_mode == "FIELD":
+            policy.update({
+                "geofence_required": False,
+                "gps_audit_required": True,
+                "allowed_methods": ["MOBILE", "GPS", "STANDARD", "DIRECT"],
+                "primary_method": "MOBILE",
+                "requires_manager_approval": False,
+                "policy_message": "Field/mobile attendance allowed. Office geofence is not required for field employees unless the employee chooses GPS verification.",
+            })
+        elif work_mode == "HYBRID":
+            policy.update({
+                "geofence_required": False,
+                "gps_audit_required": True,
+                "allowed_methods": ["HYBRID", "GPS", "REMOTE", "FACIAL", "DIRECT"],
+                "primary_method": "HYBRID",
+                "requires_manager_approval": False,
+                "policy_message": "Hybrid work mode: office or remote attendance allowed depending on schedule. Direct attendance remains available when the employee intentionally chooses it.",
+            })
+        elif work_mode == "FLEXIBLE":
+            policy.update({
+                "geofence_required": False,
+                "gps_audit_required": False,
+                "allowed_methods": ["STANDARD", "REMOTE", "GPS", "DIRECT"],
+                "primary_method": "STANDARD",
+                "requires_manager_approval": False,
+                "policy_message": "Flexible work mode: standard or remote attendance allowed, with direct attendance available for explicit workday start/end actions.",
+            })
+        else:
+            # Unknown modes fall back to OFFICE behavior conservatively
+            policy.update({
+                "geofence_required": True,
+                "gps_audit_required": True,
+                "allowed_methods": ["GPS", "FACIAL", "BIOMETRIC", "DIRECT"],
+                "primary_method": "GPS",
+                "requires_manager_approval": False,
+                "policy_message": "Unrecognized work mode. Falling back to office attendance policy while still allowing direct attendance when explicitly selected.",
+            })
+
+        return policy
+
+    @staticmethod
     def _verify_gps_payload(latitude: Optional[float], longitude: Optional[float], *, require_location: bool) -> Dict[str, Any]:
         if latitude is None or longitude is None:
             if require_location:
@@ -1585,13 +1961,45 @@ class AttendanceService:
         except ValueError as exc:
             raise ValueError("Invalid check-in time supplied.") from exc
 
-        gps_info = AttendanceService._verify_gps_payload(
-            payload.latitude,
-            payload.longitude,
-            require_location=True,
+        # Evaluate today's attendance policy and decide how to treat GPS/geofence
+        policy = AttendanceService._evaluate_attendance_policy(employee, today_str)
+        allowed_methods = [
+            AttendanceService._normalize_verification_method(item)
+            for item in (policy.get("allowed_methods") or [])
+            if str(item).strip()
+        ]
+        selected_method = AttendanceService._normalize_verification_method(
+            payload.verificationMethod or policy.get("primary_method") or "STANDARD"
         )
-        if not gps_info["gpsVerified"]:
-            raise ValueError("You are outside the permitted attendance area.")
+        if selected_method and allowed_methods and not any(str(item).upper() == str(selected_method).upper() for item in allowed_methods):
+            raise ValueError(f"Verification method '{selected_method}' is not allowed for the current work policy.")
+
+        direct_bypass = selected_method in {"DIRECT", "DIRECT_ATTENDANCE"}
+        require_location = bool(policy.get("geofence_required") and not direct_bypass)
+
+        # If geofence is required by policy, GPS location is mandatory and must be inside geofence
+        if require_location:
+            gps_info = AttendanceService._verify_gps_payload(
+                payload.latitude,
+                payload.longitude,
+                require_location=True,
+            )
+            if not gps_info["gpsVerified"]:
+                raise ValueError("You are outside the permitted attendance area. " + policy.get("policy_message", ""))
+        else:
+            # Policy does not require being inside office geofence. Capture GPS if provided for audit (not mandatory).
+            gps_info = AttendanceService._verify_gps_payload(
+                payload.latitude,
+                payload.longitude,
+                require_location=not direct_bypass,
+            )
+
+        if direct_bypass:
+            verification_status = "Directly Approved"
+            gps_info.setdefault("geofenceStatus", "DIRECT")
+            gps_info.setdefault("gpsVerified", None)
+        else:
+            verification_status = "Verified" if (gps_info.get("gpsVerified") is not False or selected_method in {"STANDARD", "REMOTE", "FACIAL", "BIOMETRIC", "QR", "MOBILE"}) else "Review Required"
 
         existing = await db.attendance.find_one(
             {
@@ -1614,11 +2022,25 @@ class AttendanceService:
                 "LateArrival": late_arrival,
                 "CheckOut": None,
                 "WorkingHours": 0.0,
-                "GPSVerified": True,
-                "Latitude": gps_info["latitude"],
-                "Longitude": gps_info["longitude"],
-                "DistanceFromOffice": gps_info["distanceFromOffice"],
-                "GeofenceStatus": gps_info["geofenceStatus"],
+                "GPSVerified": gps_info.get("gpsVerified"),
+                "Latitude": gps_info.get("latitude"),
+                "Longitude": gps_info.get("longitude"),
+                "DistanceFromOffice": gps_info.get("distanceFromOffice"),
+                "GeofenceStatus": gps_info.get("geofenceStatus"),
+                "WorkMode": policy.get("work_mode"),
+                "WorkContext": {"workMode": policy.get("work_mode"), "policyMessage": policy.get("policy_message"), "assignedSite": employee.get("Location") or employee.get("AssignedSite") or None},
+                "AllowedVerificationMethods": allowed_methods,
+                "VerificationMethod": selected_method,
+                "VerificationStatus": verification_status,
+                "Verification": {
+                    "method": selected_method,
+                    "status": "APPROVED" if direct_bypass else verification_status,
+                    "mode": "DIRECT_ATTENDANCE" if direct_bypass else selected_method,
+                    "requiresManagerApproval": bool(policy.get("requires_manager_approval")),
+                },
+                "LocationAudit": {"gpsAuditRequired": bool(policy.get("gps_audit_required")), "distanceFromOffice": gps_info.get("distanceFromOffice"), "geofenceStatus": gps_info.get("geofenceStatus")},
+                "AttendanceException": None,
+                "ReviewStatus": "Approved" if verification_status in {"Verified", "Directly Approved"} else "Pending",
             }
             await db.attendance.update_one(
                 {"_id": existing["_id"]},
@@ -1636,11 +2058,25 @@ class AttendanceService:
             "WorkingHours": 0.0,
             "AttendanceStatus": "Late" if late_arrival else "Present",
             "LateArrival": late_arrival,
-            "GPSVerified": True,
-            "Latitude": gps_info["latitude"],
-            "Longitude": gps_info["longitude"],
-            "DistanceFromOffice": gps_info["distanceFromOffice"],
-            "GeofenceStatus": gps_info["geofenceStatus"],
+            "GPSVerified": gps_info.get("gpsVerified"),
+            "Latitude": gps_info.get("latitude"),
+            "Longitude": gps_info.get("longitude"),
+            "DistanceFromOffice": gps_info.get("distanceFromOffice"),
+            "GeofenceStatus": gps_info.get("geofenceStatus"),
+            "WorkMode": policy.get("work_mode"),
+            "WorkContext": {"workMode": policy.get("work_mode"), "policyMessage": policy.get("policy_message"), "assignedSite": employee.get("Location") or employee.get("AssignedSite") or None},
+            "AllowedVerificationMethods": allowed_methods,
+            "VerificationMethod": selected_method,
+            "VerificationStatus": verification_status,
+            "Verification": {
+                "method": selected_method,
+                "status": "APPROVED" if direct_bypass else verification_status,
+                "mode": "DIRECT_ATTENDANCE" if direct_bypass else selected_method,
+                "requiresManagerApproval": bool(policy.get("requires_manager_approval")),
+            },
+            "LocationAudit": {"gpsAuditRequired": bool(policy.get("gps_audit_required")), "distanceFromOffice": gps_info.get("distanceFromOffice"), "geofenceStatus": gps_info.get("geofenceStatus")},
+            "AttendanceException": None,
+            "ReviewStatus": "Approved" if verification_status in {"Verified", "Directly Approved"} else "Pending",
         }
 
         await db.attendance.insert_one(record)
@@ -1649,6 +2085,62 @@ class AttendanceService:
     # ----------------------------------------------------------------------
     # CHECK OUT
     # ----------------------------------------------------------------------
+
+    @staticmethod
+    async def get_today_context(emp_id: str) -> Dict[str, Any]:
+        """Return today's attendance policy context and basic shift/site info for the employee.
+
+        This is a lightweight API-friendly representation intended for frontend consumption.
+        """
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+
+        if not emp_id or not str(emp_id).strip():
+            raise ValueError("Invalid employee ID for context request.")
+
+        employee = await EmployeeService.get_by_id(emp_id)
+        if not employee:
+            raise ValueError(f"Employee '{emp_id}' was not found.")
+
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+
+        policy = AttendanceService._evaluate_attendance_policy(employee, today_str)
+
+        # Assigned site/location (best-effort)
+        assigned_site = employee.get("Location") or employee.get("AssignedSite") or "Not assigned"
+
+        # Try to resolve a shift for today
+        shift_info = None
+        try:
+            shift_doc = await db.shifts.find_one({"EmpID": emp_id, "ShiftDate": today_str}, {"_id": 0})
+            if shift_doc:
+                shift_info = {
+                    "shiftName": shift_doc.get("ShiftName"),
+                    "start": shift_doc.get("ShiftStart"),
+                    "end": shift_doc.get("ShiftEnd"),
+                    "shiftId": shift_doc.get("ShiftID") or shift_doc.get("ShiftId"),
+                }
+        except Exception:
+            shift_info = None
+
+        context = {
+            "empId": emp_id,
+            "work_mode": policy.get("work_mode"),
+            "assigned_site": assigned_site,
+            "shift": shift_info,
+            "geofence_required": policy.get("geofence_required"),
+            "gps_audit_required": policy.get("gps_audit_required"),
+            "allowed_methods": policy.get("allowed_methods"),
+            "primary_method": policy.get("primary_method"),
+            "requires_manager_approval": policy.get("requires_manager_approval"),
+            "policy_message": policy.get("policy_message"),
+            "policy_status": "OK",
+        }
+
+        return context
+
 
     @staticmethod
     async def check_out(
@@ -1734,6 +2226,11 @@ class AttendanceService:
         late_arrival = AttendanceService._is_late_checkin(in_time_value)
         attendance_status = "Late" if late_arrival else "Present"
 
+        selected_method = AttendanceService._normalize_verification_method(
+            payload.verificationMethod or record.get("VerificationMethod") or record.get("Verification", {}).get("method") or "STANDARD"
+        )
+        direct_bypass = selected_method in {"DIRECT", "DIRECT_ATTENDANCE"}
+
         gps_update = {}
         if payload.latitude is not None or payload.longitude is not None:
             gps_info = AttendanceService._verify_gps_payload(
@@ -1754,11 +2251,26 @@ class AttendanceService:
                 gps_update["Latitude"] = gps_info["latitude"]
                 gps_update["Longitude"] = gps_info["longitude"]
 
+        if direct_bypass:
+            gps_update.setdefault("GPSVerified", record.get("GPSVerified") or None)
+            gps_update.setdefault("GeofenceStatus", record.get("GeofenceStatus") or "DIRECT")
+            gps_update.setdefault("DistanceFromOffice", record.get("DistanceFromOffice"))
+            gps_update.setdefault("Latitude", record.get("Latitude"))
+            gps_update.setdefault("Longitude", record.get("Longitude"))
+
         update_payload = {
             "CheckOut": time_str,
             "WorkingHours": working_hours,
             "AttendanceStatus": attendance_status,
             "LateArrival": late_arrival,
+            "VerificationMethod": selected_method,
+            "VerificationStatus": "Directly Approved" if direct_bypass else (record.get("VerificationStatus") or "Verified"),
+            "Verification": {
+                "method": selected_method,
+                "status": "APPROVED" if direct_bypass else (record.get("Verification", {}).get("status") or "APPROVED"),
+                "mode": "DIRECT_ATTENDANCE" if direct_bypass else (record.get("Verification", {}).get("mode") or selected_method),
+                "requiresManagerApproval": bool(record.get("Verification", {}).get("requiresManagerApproval", False)),
+            },
             **gps_update,
         }
 
@@ -1779,6 +2291,51 @@ class AttendanceService:
             return normalize_attendance(updated_record, employee)
 
         return None
+
+    @staticmethod
+    async def create_attendance_exception(payload: Any) -> Dict[str, Any]:
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+
+        if not getattr(payload, "empId", None) or not str(payload.empId).strip():
+            raise ValueError("Invalid employee ID for exception request.")
+
+        emp_id = str(payload.empId).strip()
+        employee = await EmployeeService.get_by_id(emp_id)
+        if not employee:
+            raise ValueError(f"Employee '{emp_id}' was not found.")
+
+        created_at = datetime.now().isoformat(timespec="seconds")
+        doc = {
+            "EmpID": emp_id,
+            "EmployeeName": payload.employeeName or " ".join(filter(None, [employee.get("firstName"), employee.get("lastName")])) or employee.get("EmployeeName") or emp_id,
+            "Date": payload.date or datetime.now().strftime("%Y-%m-%d"),
+            "Reason": payload.reason or "Other",
+            "Description": payload.description or "",
+            "WorkMode": payload.workMode or "OFFICE",
+            "SelectedVerificationMethod": payload.selectedVerificationMethod or "STANDARD",
+            "GPSData": payload.gpsData or {},
+            "Status": "Pending",
+            "ReviewStatus": "Pending",
+            "CreatedAt": created_at,
+        }
+        result = await db.attendance_exceptions.insert_one(doc)
+        inserted = {**doc, "_id": result.inserted_id, "id": str(result.inserted_id)}
+        return {
+            "id": str(result.inserted_id),
+            "empId": emp_id,
+            "employeeName": inserted.get("EmployeeName"),
+            "date": inserted.get("Date"),
+            "reason": inserted.get("Reason"),
+            "description": inserted.get("Description"),
+            "workMode": inserted.get("WorkMode"),
+            "selectedVerificationMethod": inserted.get("SelectedVerificationMethod"),
+            "gpsData": inserted.get("GPSData"),
+            "status": inserted.get("Status"),
+            "reviewStatus": inserted.get("ReviewStatus"),
+            "createdAt": inserted.get("CreatedAt"),
+        }
 
 
 # ==========================================================================
@@ -1893,10 +2450,8 @@ class LeaveService:
         # ---------------------------------------------------------
         skip = (page - 1) * size
 
-        cursor = db.leaves.find(
-            query,
-            {"_id": 0}
-        ).skip(skip).limit(size)
+        # Include MongoDB _id in results so normalize_leave can emit a canonical `id` field
+        cursor = db.leaves.find(query).skip(skip).limit(size)
 
         items = await cursor.to_list(
             length=size
@@ -1913,7 +2468,8 @@ class LeaveService:
 
     @staticmethod
     async def submit(
-        request: LeaveRequestBase
+        request: LeaveRequestBase,
+        actor_user: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
 
         db = get_database()
@@ -1961,16 +2517,23 @@ class LeaveService:
             "LeaveBalance": request.leaveBalance,
             "days": days,
             "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "Reason": request.reason,
+            "EmployeeName": request.empName,
         }
 
-        await db.leaves.insert_one(data)
-
-        return normalize_leave(data)
+        insert_result = await db.leaves.insert_one(data)
+        created = dict(data)
+        created["_id"] = insert_result.inserted_id
+        created["id"] = str(insert_result.inserted_id)
+        normalized = normalize_leave(created)
+        await NotificationService.create_leave_request_notifications(normalized, actor_user=actor_user)
+        return normalized
 
     @staticmethod
     async def update_status(
         leave_id: str,
-        update: LeaveStatusUpdate
+        update: LeaveStatusUpdate,
+        actor_user: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
 
         db = get_database()
@@ -1988,18 +2551,47 @@ class LeaveService:
         except Exception:
             query = {"id": leave_id}
 
+        update_payload = {
+            "$set": {
+                "Status": normalized_status
+            }
+        }
+        comment = str(getattr(update, "approverComments", "") or "").strip()
+        if comment:
+            update_payload["$set"]["ManagerComments"] = comment
+
+        actor_name = ""
+        actor_user_id = ""
+        actor_emp_id = ""
+        actor_role = ""
+        if actor_user:
+            actor_name = str(actor_user.get("name") or actor_user.get("email") or actor_user.get("userId") or "System").strip()
+            actor_user_id = str(actor_user.get("userId") or "").strip()
+            actor_emp_id = str(actor_user.get("empId") or "").strip()
+            actor_role = str(actor_user.get("role") or "MANAGER").strip().upper()
+
+        if actor_name:
+            update_payload["$set"]["decisionByName"] = actor_name
+        if actor_user_id:
+            update_payload["$set"]["decisionByUserId"] = actor_user_id
+        if actor_emp_id:
+            update_payload["$set"]["decisionByEmpId"] = actor_emp_id
+        if actor_role:
+            update_payload["$set"]["decisionRole"] = actor_role
+        update_payload["$set"]["decisionAt"] = datetime.now(timezone.utc).isoformat()
+        if comment:
+            update_payload["$set"]["decisionComments"] = comment
+
         result = await db.leaves.find_one_and_update(
             query,
-            {
-                "$set": {
-                    "Status": normalized_status
-                }
-            },
+            update_payload,
             return_document=True
         )
 
         if result:
-            return normalize_leave(result)
+            normalized = normalize_leave(result)
+            await NotificationService.create_leave_decision_notifications(normalized, actor_user=actor_user)
+            return normalized
 
         return None
 
@@ -2127,7 +2719,8 @@ class ShiftService:
 
     @staticmethod
     async def submit(
-        request: ShiftRequestBase
+        request: ShiftRequestBase,
+        actor_user: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
 
         db = get_database()
@@ -2158,13 +2751,6 @@ class ShiftService:
 
         if not request.requestedDate or not str(request.requestedDate).strip():
             raise ValueError("requestedDate is required.")
-
-        # ---------------------------------------------------------
-        # Parse requested shift
-        #
-        # Expected:
-        # "Night (22:00 - 07:00)"
-        # ---------------------------------------------------------
 
         requested_shift = str(request.requestedShift).strip()
 
@@ -2210,10 +2796,6 @@ class ShiftService:
                 "Use 'Night (22:00 - 07:00)'."
             )
 
-        # ---------------------------------------------------------
-        # Validate date
-        # ---------------------------------------------------------
-
         try:
 
             datetime.strptime(
@@ -2226,16 +2808,6 @@ class ShiftService:
             raise ValueError(
                 "requestedDate must use YYYY-MM-DD format."
             ) from exc
-
-        # ---------------------------------------------------------
-        # Generate next ShiftID atomically
-        #
-        # Counter currently contains:
-        # seq = 20000
-        #
-        # Next ID:
-        # SH-020001
-        # ---------------------------------------------------------
 
         counter = await db.counters.find_one_and_update(
             {
@@ -2251,16 +2823,9 @@ class ShiftService:
         )
 
         sequence = counter["seq"]
-
         shift_id = f"SH-{sequence:06d}"
 
-        # ---------------------------------------------------------
-        # Create MongoDB document
-        # ---------------------------------------------------------
-
-        applied_on = datetime.now().strftime(
-            "%Y-%m-%d"
-        )
+        applied_on = datetime.now().strftime("%Y-%m-%d")
 
         record = {
             "EmpID": str(request.empId).strip(),
@@ -2273,25 +2838,14 @@ class ShiftService:
             "ShiftID": shift_id,
             "ShiftSwapStatus": "Pending",
             "Reason": request.reason,
-            "AppliedOn": applied_on
+            "AppliedOn": applied_on,
+            "empName": employee.get("EmployeeName") or employee.get("firstName"),
         }
 
-        # ---------------------------------------------------------
-        # Insert
-        # ---------------------------------------------------------
-
-        await db.shifts.insert_one(
-            record
-        )
-
-        # ---------------------------------------------------------
-        # Return API response
-        # ---------------------------------------------------------
-
-        return normalize_shift(
-            record,
-            employee
-        )
+        await db.shifts.insert_one(record)
+        normalized = normalize_shift(record, employee)
+        await NotificationService.create_shift_request_notifications(normalized, actor_user=actor_user)
+        return normalized
 
     # ----------------------------------------------------------------------
     # UPDATE SHIFT STATUS
@@ -2300,7 +2854,8 @@ class ShiftService:
     @staticmethod
     async def update_status(
         shift_id: str,
-        update: ShiftStatusUpdate
+        update: ShiftStatusUpdate,
+        actor_user: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
 
         db = get_database()
@@ -2353,10 +2908,31 @@ class ShiftService:
             }
         }
 
-        if getattr(update, "approverComments", None) is not None:
-            comment = str(update.approverComments).strip()
-            if comment:
-                update_payload["$set"]["ManagerComments"] = comment
+        comment = str(getattr(update, "approverComments", "") or "").strip()
+        if comment:
+            update_payload["$set"]["ManagerComments"] = comment
+
+        actor_name = ""
+        actor_user_id = ""
+        actor_emp_id = ""
+        actor_role = ""
+        if actor_user:
+            actor_name = str(actor_user.get("name") or actor_user.get("email") or actor_user.get("userId") or "System").strip()
+            actor_user_id = str(actor_user.get("userId") or "").strip()
+            actor_emp_id = str(actor_user.get("empId") or "").strip()
+            actor_role = str(actor_user.get("role") or "MANAGER").strip().upper()
+
+        if actor_name:
+            update_payload["$set"]["decisionByName"] = actor_name
+        if actor_user_id:
+            update_payload["$set"]["decisionByUserId"] = actor_user_id
+        if actor_emp_id:
+            update_payload["$set"]["decisionByEmpId"] = actor_emp_id
+        if actor_role:
+            update_payload["$set"]["decisionRole"] = actor_role
+        update_payload["$set"]["decisionAt"] = datetime.now(timezone.utc).isoformat()
+        if comment:
+            update_payload["$set"]["decisionComments"] = comment
 
         result = await db.shifts.find_one_and_update(
             {
@@ -2373,7 +2949,10 @@ class ShiftService:
             return None
 
         employee = await EmployeeService.get_by_id(str(emp_id).strip())
-        return normalize_shift(result, employee)
+        normalized = normalize_shift(result, employee)
+        normalized["status"] = new_status
+        await NotificationService.create_shift_decision_notifications(normalized, actor_user=actor_user)
+        return normalized
 
 
 # ==========================================================================
@@ -2504,7 +3083,9 @@ class PayrollService:
     async def get_all(
         month: Optional[str] = None,
         page: int = 1,
-        size: int = 50
+        size: int = 50,
+        emp_id: Optional[str] = None,
+        emp_ids: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
 
         db = get_database()
@@ -2519,6 +3100,11 @@ class PayrollService:
         # ---------------------------------------------------------
 
         query: Dict[str, Any] = {}
+
+        if emp_ids:
+            query["EmpID"] = {"$in": [str(item).strip() for item in emp_ids if str(item).strip()]}
+        elif emp_id and str(emp_id).strip():
+            query["EmpID"] = str(emp_id).strip()
 
         if month:
             query["PayrollMonth"] = {
@@ -2711,6 +3297,55 @@ class PerformanceService:
             normalize_performance(item)
             for item in items
         ]
+    
+    @staticmethod
+    async def get_average_productivity_score() -> Optional[float]:
+        """
+        Calculate the average productivity score across all employees
+        with a valid ProductivityScore value.
+        """
+
+        db = get_database()
+
+        if db is None:
+            raise RuntimeError(
+                "MongoDB database is not connected."
+            )
+
+        pipeline = [
+            {
+                "$match": {
+                    "ProductivityScore": {
+                        "$exists": True,
+                        "$ne": None
+                    }
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "averageProductivity": {
+                        "$avg": "$ProductivityScore"
+                    }
+                }
+            }
+        ]
+
+        results = await db.performance.aggregate(
+            pipeline
+        ).to_list(length=1)
+
+        if not results:
+            return None
+
+        average_score = results[0].get(
+            "averageProductivity"
+        )
+
+        if average_score is None:
+            return None
+
+        return round(float(average_score), 1)
 
     @staticmethod
     async def get_by_emp_id(
@@ -2849,21 +3484,6 @@ class NotificationService:
     def _notification_match_query(notif_id: str) -> Dict[str, Any]:
         or_clauses = [
             {"id": notif_id},
-            {
-                "$expr": {
-                    "$eq": [
-                        {
-                            "$concat": [
-                                "NOTIF-",
-                                "$EmpID",
-                                "-",
-                                "$NotificationDate"
-                            ]
-                        },
-                        notif_id
-                    ]
-                }
-            },
             {"_id": notif_id}
         ]
 
@@ -2877,10 +3497,420 @@ class NotificationService:
         return {"$or": or_clauses}
 
     @staticmethod
+    def _normalize_status(raw_status: Optional[str]) -> str:
+        if raw_status is None:
+            return "Unread"
+        status = str(raw_status).strip()
+        if not status:
+            return "Unread"
+        normalized = status.lower()
+        if normalized in {"read", "readable"}:
+            return "Read"
+        return "Unread"
+
+    @staticmethod
+    def _generate_notification_id(recipient_key: Optional[str], notification_type: Optional[str]) -> str:
+        prefix = "NOTIF"
+        suffix = str(uuid.uuid4().hex[:8]).upper()
+        recipient_segment = str(recipient_key or "SYSTEM").strip().upper().replace(" ", "-")
+        type_segment = str(notification_type or "SYSTEM").strip().upper().replace(" ", "-")
+        return f"{prefix}-{recipient_segment}-{type_segment}-{suffix}"
+
+    @staticmethod
+    def _normalize_role_name(role_name: Optional[str]) -> str:
+        return str(role_name or "").strip().upper()
+
+    @staticmethod
+    def _scope_query_for_user(emp_id: Optional[str], user_id: Optional[str], role: Optional[str]) -> Dict[str, Any]:
+        user_emp_id = str(emp_id or "").strip()
+        user_account_id = str(user_id or "").strip()
+        normalized_role = NotificationService._normalize_role_name(role)
+        clauses: List[Dict[str, Any]] = []
+
+        if user_emp_id:
+            clauses.append({"EmpID": user_emp_id})
+        if user_account_id:
+            clauses.append({"recipientUserId": user_account_id})
+        if normalized_role in {"HR_ADMIN", "MANAGER"}:
+            clauses.append({"recipientRole": normalized_role})
+
+        if not clauses:
+            return {}
+        return {"$or": clauses}
+
+    @staticmethod
+    def user_can_access_notification(
+        notification: Optional[Dict[str, Any]],
+        *,
+        emp_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> bool:
+        if not notification:
+            return False
+
+        current_emp_id = str(emp_id or "").strip()
+        current_user_id = str(user_id or "").strip()
+        current_role = NotificationService._normalize_role_name(role)
+        recipient_role = NotificationService._normalize_role_name(notification.get("recipientRole"))
+
+        if current_role in {"HR_ADMIN", "MANAGER"} and recipient_role == current_role:
+            return True
+
+        existing_emp_id = str(notification.get("EmpID") or notification.get("empId") or "").strip()
+        existing_user_id = str(notification.get("recipientUserId") or "").strip()
+
+        if current_user_id and existing_user_id and current_user_id == existing_user_id:
+            return True
+        if current_emp_id and existing_emp_id and current_emp_id == existing_emp_id:
+            return True
+
+        return False
+
+    @staticmethod
+    async def _resolve_user_accounts_by_role(role_name: str) -> List[Dict[str, Any]]:
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+        return await db.user_accounts.find(
+            {"role": {"$in": [role_name, role_name.upper(), role_name.lower(), str(role_name).title()]}},
+            {"_id": 0, "userId": 1, "empId": 1, "name": 1, "email": 1, "role": 1}
+        ).to_list(length=None)
+
+    @staticmethod
+    async def _lookup_employee_name(emp_id: Optional[str]) -> str:
+        if not emp_id:
+            return "Employee"
+        db = get_database()
+        if db is None:
+            return "Employee"
+        employee = await db.employees.find_one({"EmpID": str(emp_id).strip()}, {"_id": 0, "EmployeeName": 1, "firstName": 1, "lastName": 1})
+        if not employee:
+            return "Employee"
+        full_name = str(employee.get("EmployeeName") or "").strip()
+        if full_name:
+            return full_name
+        first_name = str(employee.get("firstName") or "").strip()
+        last_name = str(employee.get("lastName") or "").strip()
+        return " ".join(part for part in [first_name, last_name] if part) or "Employee"
+
+    @staticmethod
+    async def _resolve_manager_recipients(emp_id: str) -> List[Dict[str, Any]]:
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+
+        recipient_map: Dict[str, Dict[str, Any]] = {}
+        employee = await db.employees.find_one({"EmpID": str(emp_id).strip()}, {"_id": 0, "ManagerID": 1, "managerId": 1, "managerEmpId": 1})
+        if employee:
+            for candidate in (employee.get("ManagerID"), employee.get("managerId"), employee.get("managerEmpId")):
+                manager_id = str(candidate or "").strip()
+                if manager_id:
+                    recipient_map[manager_id] = {"empId": manager_id, "role": "MANAGER"}
+
+        for manager_id in sorted(recipient_map.keys()):
+            manager = await db.employees.find_one({"EmpID": manager_id}, {"_id": 0, "EmployeeName": 1, "Email": 1})
+            if manager:
+                recipient_map[manager_id]["name"] = manager.get("EmployeeName") or manager.get("name")
+                recipient_map[manager_id]["email"] = manager.get("Email") or manager.get("email")
+
+        return sorted(recipient_map.values(), key=lambda item: str(item.get("empId") or ""))
+
+    @staticmethod
+    async def _resolve_hr_recipients() -> List[Dict[str, Any]]:
+        records = await NotificationService._resolve_user_accounts_by_role("HR_ADMIN")
+        recipients: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for record in records:
+            user_id = str(record.get("userId") or "").strip()
+            emp_id = str(record.get("empId") or "").strip()
+            key = user_id or emp_id or str(record.get("email") or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            recipient = {"role": "HR_ADMIN", "name": record.get("name") or record.get("email")}
+            if user_id:
+                recipient["userId"] = user_id
+            if emp_id:
+                recipient["empId"] = emp_id
+            recipients.append(recipient)
+        return recipients
+
+    @staticmethod
+    async def _create_notification_batch(
+        *,
+        recipients: List[Dict[str, Any]],
+        notification_type: str,
+        related_entity_type: str,
+        related_entity_id: str,
+        title: str,
+        message: str,
+        actor_user: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        if not recipients or not related_entity_id:
+            return []
+
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+
+        created: List[Dict[str, Any]] = []
+        seen_keys: set[str] = set()
+        now = datetime.now(timezone.utc)
+
+        for recipient in recipients:
+            recipient_emp_id = str(recipient.get("empId") or "").strip()
+            recipient_user_id = str(recipient.get("userId") or "").strip()
+            recipient_key = recipient_user_id or recipient_emp_id or str(recipient.get("role") or "unassigned")
+            duplicate_key = (recipient_key, notification_type, related_entity_type, related_entity_id)
+            if duplicate_key in seen_keys:
+                continue
+            seen_keys.add(duplicate_key)
+
+            doc = {
+                "id": NotificationService._generate_notification_id(recipient_key, notification_type),
+                "Title": title,
+                "Message": message,
+                "Type": notification_type,
+                "notificationType": notification_type,
+                "relatedEntityType": related_entity_type,
+                "relatedEntityId": str(related_entity_id),
+                "Status": "Unread",
+                "isRead": False,
+                "NotificationDate": now.strftime("%Y-%m-%d"),
+                "createdAt": now.isoformat(),
+                "metadata": metadata or {},
+                "priority": "Medium",
+                "recipientRole": recipient.get("role") or "SYSTEM",
+            }
+
+            actor_name = str(actor_user.get("name") or actor_user.get("email") or "System").strip() if actor_user else "System"
+            actor_user_id = str(actor_user.get("userId") or "").strip() if actor_user else ""
+            actor_emp_id = str(actor_user.get("empId") or "").strip() if actor_user else ""
+            if actor_user_id:
+                doc["actorUserId"] = actor_user_id
+            if actor_emp_id:
+                doc["actorEmpId"] = actor_emp_id
+            if actor_name:
+                doc["actorName"] = actor_name
+
+            if recipient_emp_id:
+                doc["EmpID"] = recipient_emp_id
+            if recipient_user_id:
+                doc["recipientUserId"] = recipient_user_id
+
+            existing_filter = {
+                "notificationType": notification_type,
+                "relatedEntityType": related_entity_type,
+                "relatedEntityId": str(related_entity_id),
+            }
+            if recipient_emp_id:
+                existing_filter["EmpID"] = recipient_emp_id
+            elif recipient_user_id:
+                existing_filter["recipientUserId"] = recipient_user_id
+            if await db.notifications.count_documents(existing_filter):
+                continue
+
+            await db.notifications.insert_one(doc)
+            created.append(normalize_notification(doc))
+
+        return created
+
+    @staticmethod
+    async def create_leave_request_notifications(leave_doc: Dict[str, Any], actor_user: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        emp_id = str(leave_doc.get("empId") or leave_doc.get("EmpID") or "").strip()
+        if not emp_id:
+            return []
+
+        employee_name = str(leave_doc.get("empName") or await NotificationService._lookup_employee_name(emp_id)).strip() or "Employee"
+        leave_type = str(leave_doc.get("leaveType") or leave_doc.get("LeaveType") or "Leave").strip() or "Leave"
+        start_date = str(leave_doc.get("startDate") or leave_doc.get("StartDate") or "").strip()
+        end_date = str(leave_doc.get("endDate") or leave_doc.get("EndDate") or "").strip()
+        reason = str(leave_doc.get("reason") or leave_doc.get("Reason") or "Not provided").strip() or "Not provided"
+        # Prefer the UI-friendly RequestID label when present for display, but use the canonical
+        # id (d['id']) as the related_entity identifier so notification actions can reliably
+        # resolve the underlying leave record.
+        request_label = str(leave_doc.get("requestId") or leave_doc.get("RequestID") or "").strip()
+        if not request_label:
+            request_label = f"leave-{emp_id}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+        canonical_id = str(leave_doc.get("id") or leave_doc.get("_id") or request_label).strip()
+
+        title = f"{employee_name} has submitted a new leave request."
+        message = (
+            f"{employee_name} submitted a {leave_type} leave request from {start_date} to {end_date}. "
+            f"Reason: {reason}. Status: Pending. Request ID: {request_label}."
+        )
+        metadata = {
+            "employeeId": emp_id,
+            "employeeName": employee_name,
+            "leaveType": leave_type,
+            "startDate": start_date,
+            "endDate": end_date,
+            "reason": reason,
+            "status": "Pending",
+            "requestId": request_label,
+        }
+
+        recipients = []
+        recipients.extend(await NotificationService._resolve_hr_recipients())
+        recipients.extend(await NotificationService._resolve_manager_recipients(emp_id))
+
+        return await NotificationService._create_notification_batch(
+            recipients=recipients,
+            notification_type="leave_request_submitted",
+            related_entity_type="leave",
+            related_entity_id=canonical_id,
+            title=title,
+            message=message,
+            actor_user=actor_user,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    async def create_leave_decision_notifications(leave_doc: Dict[str, Any], actor_user: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        emp_id = str(leave_doc.get("empId") or leave_doc.get("EmpID") or "").strip()
+        if not emp_id:
+            return []
+
+        employee_name = str(leave_doc.get("empName") or await NotificationService._lookup_employee_name(emp_id)).strip() or "Employee"
+        final_status = str(leave_doc.get("status") or leave_doc.get("Status") or "Pending").strip().title()
+        leave_type = str(leave_doc.get("leaveType") or leave_doc.get("LeaveType") or "Leave").strip() or "Leave"
+        start_date = str(leave_doc.get("startDate") or leave_doc.get("StartDate") or "").strip()
+        end_date = str(leave_doc.get("endDate") or leave_doc.get("EndDate") or "").strip()
+        # Preserve the display RequestID separately and use the canonical id for related_entity linkage
+        request_label = str(leave_doc.get("requestId") or leave_doc.get("RequestID") or "").strip()
+        canonical_id = str(leave_doc.get("id") or leave_doc.get("_id") or request_label).strip()
+        approver_name = str(actor_user.get("name") or actor_user.get("email") or "HR/Manager").strip() if actor_user else "HR/Manager"
+        comment = str(leave_doc.get("approverComments") or leave_doc.get("ManagerComments") or "").strip()
+
+        if final_status == "Approved":
+            title = "Your leave request has been approved."
+            message = f"Your {leave_type} leave request from {start_date} to {end_date} has been approved by {approver_name}. Request ID: {request_label}."
+            notification_type = "leave_request_approved"
+        else:
+            title = "Your leave request has been rejected."
+            message = f"Your {leave_type} leave request from {start_date} to {end_date} has been rejected by {approver_name}. Request ID: {request_label}."
+            if comment:
+                message = f"{message} Reason: {comment}."
+            notification_type = "leave_request_rejected"
+
+        metadata = {
+            "employeeId": emp_id,
+            "employeeName": employee_name,
+            "leaveType": leave_type,
+            "startDate": start_date,
+            "endDate": end_date,
+            "status": final_status,
+            "requestId": request_label,
+            "approverName": approver_name,
+            "approverComments": comment,
+        }
+
+        return await NotificationService._create_notification_batch(
+            recipients=[{"empId": emp_id, "role": "EMPLOYEE"}],
+            notification_type=notification_type,
+            related_entity_type="leave",
+            related_entity_id=canonical_id,
+            title=title,
+            message=message,
+            actor_user=actor_user,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    async def create_shift_request_notifications(shift_doc: Dict[str, Any], actor_user: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        emp_id = str(shift_doc.get("empId") or shift_doc.get("EmpID") or "").strip()
+        if not emp_id:
+            return []
+
+        employee_name = str(shift_doc.get("empName") or await NotificationService._lookup_employee_name(emp_id)).strip() or "Employee"
+        shift_name = str(shift_doc.get("shiftName") or shift_doc.get("ShiftName") or "Shift").strip() or "Shift"
+        requested_date = str(shift_doc.get("requestedDate") or shift_doc.get("ShiftDate") or "").strip()
+        reason = str(shift_doc.get("reason") or shift_doc.get("Reason") or "Not provided").strip() or "Not provided"
+        request_id = str(shift_doc.get("id") or shift_doc.get("ShiftID") or shift_doc.get("_id") or "").strip()
+        if not request_id:
+            request_id = f"shift-{emp_id}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+        title = f"{employee_name} has submitted a shift request."
+        message = f"{employee_name} submitted a shift request for {shift_name} on {requested_date}. Reason: {reason}. Status: Pending. Request ID: {request_id}."
+        metadata = {
+            "employeeId": emp_id,
+            "employeeName": employee_name,
+            "shiftName": shift_name,
+            "requestedDate": requested_date,
+            "reason": reason,
+            "status": "Pending",
+            "requestId": request_id,
+        }
+
+        recipients = []
+        recipients.extend(await NotificationService._resolve_hr_recipients())
+        recipients.extend(await NotificationService._resolve_manager_recipients(emp_id))
+
+        return await NotificationService._create_notification_batch(
+            recipients=recipients,
+            notification_type="shift_request_submitted",
+            related_entity_type="shift",
+            related_entity_id=request_id,
+            title=title,
+            message=message,
+            actor_user=actor_user,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    async def create_shift_decision_notifications(shift_doc: Dict[str, Any], actor_user: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        emp_id = str(shift_doc.get("empId") or shift_doc.get("EmpID") or "").strip()
+        if not emp_id:
+            return []
+
+        employee_name = str(shift_doc.get("empName") or await NotificationService._lookup_employee_name(emp_id)).strip() or "Employee"
+        final_status = str(shift_doc.get("status") or shift_doc.get("ShiftSwapStatus") or "Pending").strip().title()
+        shift_name = str(shift_doc.get("shiftName") or shift_doc.get("ShiftName") or "Shift").strip() or "Shift"
+        requested_date = str(shift_doc.get("requestedDate") or shift_doc.get("ShiftDate") or "").strip()
+        request_id = str(shift_doc.get("id") or shift_doc.get("ShiftID") or shift_doc.get("_id") or "").strip()
+        approver_name = str(actor_user.get("name") or actor_user.get("email") or "HR/Manager").strip() if actor_user else "HR/Manager"
+        comment = str(shift_doc.get("approverComments") or shift_doc.get("ManagerComments") or "").strip()
+
+        if final_status == "Approved":
+            title = "Your shift request has been approved."
+            message = f"Your shift request for {shift_name} on {requested_date} has been approved by {approver_name}. Request ID: {request_id}."
+            notification_type = "shift_request_approved"
+        else:
+            title = "Your shift request has been rejected."
+            message = f"Your shift request for {shift_name} on {requested_date} has been rejected by {approver_name}. Request ID: {request_id}."
+            if comment:
+                message = f"{message} Reason: {comment}."
+            notification_type = "shift_request_rejected"
+
+        metadata = {
+            "employeeId": emp_id,
+            "employeeName": employee_name,
+            "shiftName": shift_name,
+            "requestedDate": requested_date,
+            "status": final_status,
+            "requestId": request_id,
+            "approverName": approver_name,
+            "approverComments": comment,
+        }
+
+        return await NotificationService._create_notification_batch(
+            recipients=[{"empId": emp_id, "role": "EMPLOYEE"}],
+            notification_type=notification_type,
+            related_entity_type="shift",
+            related_entity_id=request_id,
+            title=title,
+            message=message,
+            actor_user=actor_user,
+            metadata=metadata,
+        )
+
+    @staticmethod
     async def create(
         data: NotificationCreate
     ) -> Dict[str, Any]:
-
         db = get_database()
 
         if db is None:
@@ -2888,15 +3918,46 @@ class NotificationService:
                 "MongoDB database is not connected."
             )
 
+        status_value = NotificationService._normalize_status(data.status)
+        notification_type = str(data.notificationType or data.type or "System").strip() or "System"
+        title = str(data.title or data.message or notification_type).strip() or "Notification"
+        message = str(data.message or data.title or title).strip() or "Notification"
+
         notification = {
-            "Type": data.type or "System",
-            "Message": data.message or data.title or "Notification",
-            "Status": data.status or "Unread",
-            "NotificationDate": datetime.now().strftime("%Y-%m-%d")
+            "id": NotificationService._generate_notification_id(
+                str(data.recipientEmpId or data.empId or data.recipientUserId or data.actorUserId or "SYSTEM"),
+                notification_type,
+            ),
+            "Title": title,
+            "Message": message,
+            "Type": notification_type,
+            "notificationType": notification_type,
+            "Status": status_value,
+            "isRead": bool(data.isRead or status_value == "Read"),
+            "NotificationDate": datetime.now().strftime("%Y-%m-%d"),
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "priority": data.priority or "Medium",
+            "metadata": data.metadata or {},
         }
 
         if data.empId:
-            notification["EmpID"] = data.empId
+            notification["EmpID"] = str(data.empId).strip()
+        if data.recipientEmpId:
+            notification["EmpID"] = str(data.recipientEmpId).strip()
+        if data.recipientUserId:
+            notification["recipientUserId"] = str(data.recipientUserId).strip()
+        if data.recipientRole:
+            notification["recipientRole"] = NotificationService._normalize_role_name(data.recipientRole)
+        if data.actorUserId:
+            notification["actorUserId"] = str(data.actorUserId).strip()
+        if data.actorEmpId:
+            notification["actorEmpId"] = str(data.actorEmpId).strip()
+        if data.actorName:
+            notification["actorName"] = str(data.actorName).strip()
+        if data.relatedEntityType:
+            notification["relatedEntityType"] = data.relatedEntityType
+        if data.relatedEntityId:
+            notification["relatedEntityId"] = str(data.relatedEntityId)
 
         await db.notifications.insert_one(notification)
 
@@ -2914,8 +3975,13 @@ class NotificationService:
         return normalize_notification(existing)
 
     @staticmethod
-    async def get_all(page: int = 1, size: int = 50, emp_id: Optional[str] = None) -> List[Dict[str, Any]]:
-
+    async def get_all(
+        page: int = 1,
+        size: int = 50,
+        emp_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         db = get_database()
 
         if db is None:
@@ -2923,21 +3989,17 @@ class NotificationService:
                 "MongoDB database is not connected."
             )
 
-        query: Dict[str, Any] = {}
-        if emp_id and str(emp_id).strip():
-            query["EmpID"] = str(emp_id).strip()
+        query = NotificationService._scope_query_for_user(emp_id, user_id, role)
+        if not query:
+            return []
 
         skip = (page - 1) * size
-
-        # Include MongoDB _id so we can synthesize a stable API id, but only return the specific fields we need
         cursor = db.notifications.find(
             query,
-            {"_id": 1, "id": 1, "EmpID": 1, "Type": 1, "Message": 1, "Status": 1, "NotificationDate": 1, "priority": 1}
-        ).skip(skip).limit(size)
+            {"_id": 1, "id": 1, "EmpID": 1, "Title": 1, "Message": 1, "Type": 1, "notificationType": 1, "relatedEntityType": 1, "relatedEntityId": 1, "Status": 1, "isRead": 1, "NotificationDate": 1, "priority": 1, "metadata": 1, "recipientUserId": 1, "recipientRole": 1, "actorUserId": 1, "actorEmpId": 1, "actorName": 1}
+        ).sort("_id", -1).skip(skip).limit(size)
 
-        items = await cursor.to_list(
-            length=size
-        )
+        items = await cursor.to_list(length=size)
 
         return [
             normalize_notification(item)
@@ -2945,12 +4007,32 @@ class NotificationService:
         ]
 
     @staticmethod
+    async def count_unread(
+        emp_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        *,
+        role: Optional[str] = None,
+    ) -> int:
+        db = get_database()
+        if db is None:
+            raise RuntimeError("MongoDB database is not connected.")
+
+        status_query: Dict[str, Any] = {"$or": [{"Status": {"$in": ["Unread", "UNREAD", "unread"]}}, {"isRead": False}]}
+        scope_query = NotificationService._scope_query_for_user(emp_id, user_id, role)
+
+        if not scope_query:
+            return 0
+
+        query = {"$and": [scope_query, status_query]}
+        return await db.notifications.count_documents(query)
+
+    @staticmethod
     async def mark_read(
         notif_id: str,
         emp_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         role: Optional[str] = None
     ) -> bool:
-
         db = get_database()
 
         if db is None:
@@ -2962,8 +4044,13 @@ class NotificationService:
         if not existing:
             return False
 
-        if emp_id and str(role or "").upper() != "HR_ADMIN":
-            if str(existing.get("EmpID") or "").strip() != str(emp_id).strip():
+        if emp_id and str(emp_id).strip() or user_id and str(user_id).strip():
+            if not NotificationService.user_can_access_notification(
+                existing,
+                emp_id=emp_id,
+                user_id=user_id,
+                role=role,
+            ):
                 return False
 
         result = await db.notifications.update_one(
@@ -2971,22 +4058,20 @@ class NotificationService:
             {
                 "$set": {
                     "Status": "Read",
-                    "isRead": True
+                    "isRead": True,
+                    "readAt": datetime.now(timezone.utc).isoformat(),
                 }
             }
         )
 
-        return (
-            result.modified_count > 0
-            or result.matched_count > 0
-        )
+        return result.modified_count > 0 or result.matched_count > 0
 
     @staticmethod
     async def mark_all_read(
         emp_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         role: Optional[str] = None
     ) -> bool:
-
         db = get_database()
 
         if db is None:
@@ -2994,16 +4079,17 @@ class NotificationService:
                 "MongoDB database is not connected."
             )
 
-        query: Dict[str, Any] = {}
-        if emp_id and str(role or "").upper() != "HR_ADMIN":
-            query["EmpID"] = str(emp_id).strip()
+        query = NotificationService._scope_query_for_user(emp_id, user_id, role)
+        if not query:
+            return False
 
         await db.notifications.update_many(
             query,
             {
                 "$set": {
                     "Status": "Read",
-                    "isRead": True
+                    "isRead": True,
+                    "readAt": datetime.now(timezone.utc).isoformat(),
                 }
             }
         )

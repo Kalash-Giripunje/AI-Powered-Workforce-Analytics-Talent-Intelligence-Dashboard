@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, EmailStr, ConfigDict
+from pydantic import BaseModel, Field, EmailStr, ConfigDict, AliasChoices
 from typing import List, Optional, Any, Dict, Generic, TypeVar
 from datetime import datetime
 
@@ -13,6 +13,7 @@ class PaginatedResponse(BaseModel, Generic[T]):
     page: int
     size: int
     pages: int
+    summary: Optional[Dict[str, Any]] = None
 
 # --------------------------------------------------------------------------
 # Emergency Contact & Employee Schemas
@@ -115,20 +116,75 @@ class AttendanceBase(BaseModel):
     gpsVerified: Optional[bool] = None
     distanceFromOffice: Optional[float] = None
     geofenceStatus: Optional[str] = None
+    workMode: Optional[str] = None
+    workContext: Optional[Dict[str, Any]] = None
+    allowedVerificationMethods: Optional[List[str]] = None
+    verificationMethod: Optional[str] = None
+    verificationStatus: Optional[str] = None
+    verification: Optional[Dict[str, Any]] = None
+    locationAudit: Optional[Dict[str, Any]] = None
+    attendanceException: Optional[Dict[str, Any]] = None
+    reviewStatus: Optional[str] = None
 
 class AttendanceCheckIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
     empId: str
-    checkInTime: Optional[str] = None
+    checkInTime: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("checkInTime", "checkIn"),
+        description="Attendance check-in time using the current API or legacy payload key",
+    )
+    date: Optional[str] = Field(default=None, description="Legacy compatibility field for the attendance date")
+    checkOut: Optional[str] = Field(default=None, description="Legacy compatibility field; not used for check-in creation")
+    workingHours: Optional[float] = Field(default=None, description="Legacy compatibility field; not used for check-in creation")
+    status: Optional[str] = Field(default=None, description="Legacy compatibility field; not used to override attendance status")
     latitude: Optional[float] = Field(default=None, ge=-90, le=90)
     longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    verificationMethod: Optional[str] = Field(default=None, description="Selected attendance verification method")
+    verificationStatus: Optional[str] = Field(default=None, description="Verification status to persist with the attendance record")
+    workMode: Optional[str] = Field(default=None, description="Employee work mode for the day")
+    workContext: Optional[Dict[str, Any]] = Field(default=None, description="Context snapshot for policy and work arrangement")
+    allowedVerificationMethods: Optional[List[str]] = Field(default=None, description="Allowed verification methods for this policy")
+    verification: Optional[Dict[str, Any]] = Field(default=None, description="Arbitrary verification metadata")
+    locationAudit: Optional[Dict[str, Any]] = Field(default=None, description="Location GPS audit metadata")
 
 class AttendanceCheckOut(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
     empId: str
-    checkOutTime: Optional[str] = None
+    checkOutTime: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("checkOutTime", "checkOut"),
+        description="Attendance check-out time using the current API or legacy payload key",
+    )
+    date: Optional[str] = Field(default=None, description="Legacy compatibility field for the attendance date")
+    checkIn: Optional[str] = Field(default=None, description="Legacy compatibility field; not used for check-out creation")
+    workingHours: Optional[float] = Field(default=None, description="Legacy compatibility field; not used to override working hours")
+    status: Optional[str] = Field(default=None, description="Legacy compatibility field; not used to override attendance status")
     latitude: Optional[float] = Field(default=None, ge=-90, le=90)
     longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    verificationMethod: Optional[str] = None
+    verificationStatus: Optional[str] = None
+    verification: Optional[Dict[str, Any]] = None
+
+class AttendanceExceptionBase(BaseModel):
+    id: Optional[str] = None
+    empId: str
+    employeeName: Optional[str] = None
+    date: Optional[str] = None
+    reason: Optional[str] = None
+    description: Optional[str] = None
+    workMode: Optional[str] = None
+    selectedVerificationMethod: Optional[str] = None
+    gpsData: Optional[Dict[str, Any]] = None
+    status: Optional[str] = Field(default="Pending", description="Submission status")
+    reviewStatus: Optional[str] = Field(default="Pending", description="HR/manager review status")
+    createdAt: Optional[str] = None
+
+class AttendanceExceptionCreate(AttendanceExceptionBase):
+    pass
+
+class AttendanceExceptionResponse(AttendanceExceptionBase):
+    pass
 
 # --------------------------------------------------------------------------
 # Leave Schemas
@@ -147,6 +203,12 @@ class LeaveRequestBase(BaseModel):
     appliedOn: Optional[str] = None
     approverComments: Optional[str] = None
     leaveBalance: Optional[int] = None
+    decisionByUserId: Optional[str] = Field(default=None, description="User ID of the manager or HR approver who made the final decision")
+    decisionByEmpId: Optional[str] = Field(default=None, description="Employee ID of the approver when available")
+    decisionByName: Optional[str] = Field(default=None, description="Display name of the approver")
+    decisionRole: Optional[str] = Field(default=None, description="Role of the approver at decision time")
+    decisionAt: Optional[str] = Field(default=None, description="ISO timestamp when final decision was recorded")
+    decisionComments: Optional[str] = Field(default=None, description="Final decision comments captured on the request")
 
 class LeaveStatusUpdate(BaseModel):
     status: str
@@ -194,6 +256,12 @@ class ShiftRequestResponse(BaseModel):
     appliedOn: Optional[str] = None
     approverComments: Optional[str] = None
     approverName: Optional[str] = None
+    decisionByUserId: Optional[str] = Field(default=None, description="User ID of the manager or HR approver who made the final decision")
+    decisionByEmpId: Optional[str] = Field(default=None, description="Employee ID of the approver when available")
+    decisionByName: Optional[str] = Field(default=None, description="Display name of the approver")
+    decisionRole: Optional[str] = Field(default=None, description="Role of the approver at decision time")
+    decisionAt: Optional[str] = Field(default=None, description="ISO timestamp when final decision was recorded")
+    decisionComments: Optional[str] = Field(default=None, description="Final decision comments captured on the request")
 
 
 class ShiftStatusUpdate(BaseModel):
@@ -269,22 +337,45 @@ class PerformanceUpdate(BaseModel):
 # --------------------------------------------------------------------------
 
 class NotificationCreate(BaseModel):
-    empId: Optional[str] = Field(default=None, description="Employee ID when tied to a workforce notification")
-    title: Optional[str] = Field(default=None, description="Notification title when available")
+    empId: Optional[str] = Field(default=None, description="Primary employee recipient when the notification is tied to a specific employee")
+    recipientEmpId: Optional[str] = Field(default=None, description="Explicit recipient employee ID for recipient-specific notifications")
+    recipientUserId: Optional[str] = Field(default=None, description="Explicit user account ID when the recipient is not an employee record")
+    recipientRole: Optional[str] = Field(default=None, description="Explicit workflow role target for HR_ADMIN or MANAGER notifications")
+    actorUserId: Optional[str] = Field(default=None, description="User account ID of the actor who triggered the notification")
+    actorEmpId: Optional[str] = Field(default=None, description="Employee ID of the actor who triggered the notification")
+    actorName: Optional[str] = Field(default=None, description="Display name of the actor")
+    title: Optional[str] = Field(default=None, description="Notification title")
     message: Optional[str] = Field(default=None, description="Notification message")
-    type: Optional[str] = Field(default=None, description="Notification type such as Leave, Shift, Payroll, Performance")
+    type: Optional[str] = Field(default=None, description="Legacy notification type alias")
+    notificationType: Optional[str] = Field(default=None, description="Canonical notification type such as leave_request_submitted")
+    relatedEntityType: Optional[str] = Field(default=None, description="Domain entity related to the notification, such as leave or shift")
+    relatedEntityId: Optional[str] = Field(default=None, description="Identifier of the related leave or shift request")
     status: Optional[str] = Field(default=None, description="Notification status such as Read or Unread")
+    isRead: Optional[bool] = Field(default=False, description="Whether the notification has been read")
     priority: Optional[str] = Field(default=None, description="Notification priority: Low, Medium, High")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional structured notification metadata")
 
 
 class NotificationBase(BaseModel):
     id: Optional[str] = None
+    empId: Optional[str] = None
+    recipientEmpId: Optional[str] = None
+    recipientUserId: Optional[str] = None
+    recipientRole: Optional[str] = None
+    actorUserId: Optional[str] = None
+    actorEmpId: Optional[str] = None
+    actorName: Optional[str] = None
     title: Optional[str] = None
     message: Optional[str] = None
     timestamp: Optional[str] = None
     type: Optional[str] = None
+    notificationType: Optional[str] = None
+    relatedEntityType: Optional[str] = None
+    relatedEntityId: Optional[str] = None
     isRead: Optional[bool] = None
+    status: Optional[str] = None
     priority: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class AuditLogCreate(BaseModel):
@@ -327,6 +418,7 @@ class DashboardMetrics(BaseModel):
     totalEmployees: int
     activeEmployees: int
     attendanceRate: str
+    productivityScore: Optional[float] = None
     attritionRiskCount: int
     totalMonthlyPayroll: float
     pendingLeaveRequests: int

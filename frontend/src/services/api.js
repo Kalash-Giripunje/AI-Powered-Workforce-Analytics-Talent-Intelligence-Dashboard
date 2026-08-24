@@ -25,6 +25,44 @@ const apiClient = axios.create({
   },
 });
 
+// Helper: robustly download a file from a server-provided downloadUrl that may or may not
+// include the API prefix. This function resolves the final request URL in a safe way and
+// returns an axios promise with responseType 'blob'. It preserves auth headers via the
+// apiClient interceptor.
+export async function downloadFileByUrl(downloadUrl, opts = {}) {
+  if (!downloadUrl) throw new Error('downloadUrl is required');
+
+  // If downloadUrl is absolute (http/https), request it directly.
+  if (/^https?:\/\//i.test(downloadUrl)) {
+    return apiClient.get(downloadUrl, { responseType: 'blob', ...opts });
+  }
+
+  // If downloadUrl starts with a slash, it may be returned as '/reports/download...'
+  // or '/api/reports/download...'. Construct the final URL carefully to avoid
+  // duplicating the api prefix.
+  const base = (apiClient.defaults && apiClient.defaults.baseURL) ? String(apiClient.defaults.baseURL).replace(/\/+$/, '') : '';
+
+  // If the returned URL already contains the base path (e.g., '/api/reports/...')
+  // prefer requesting it as an absolute path from the browser origin. Using an
+  // empty baseURL with axios makes a request to the origin + path which matches
+  // how a browser would request the backend.
+  if (downloadUrl.startsWith(base)) {
+    // downloadUrl already includes base (rare). Request directly by absolute path.
+    return axios.get(downloadUrl, { responseType: 'blob', ...opts });
+  }
+
+  // If downloadUrl starts with '/api', request it as an absolute path so the browser
+  // origin + path is used (works for same-origin backends). Otherwise, prepend the
+  // apiClient baseURL so host+api path are honored.
+  if (downloadUrl.startsWith('/api')) {
+    return axios.get(downloadUrl, { responseType: 'blob', ...opts });
+  }
+
+  // Otherwise, assemble final URL from apiClient baseURL + downloadUrl.
+  const assembled = `${base}${downloadUrl.startsWith('/') ? '' : '/'}${downloadUrl}`;
+  return axios.get(assembled, { responseType: 'blob', ...opts });
+}
+
 export function getStoredAuthToken() {
   if (typeof window === 'undefined') return null;
   return localStorage.getItem(AUTH_TOKEN_KEY);
@@ -90,6 +128,8 @@ export const api = {
   // Attendance
   getAttendance: (params) => apiClient.get('/attendance', { params }),
   getAttendanceAnomalies: () => apiClient.get('/attendance/anomalies'),
+  getAttendanceContext: (empId) => apiClient.get('/attendance/today-context', { params: { empId } }),
+  submitAttendanceException: (data) => apiClient.post('/attendance/exceptions', data),
   checkIn: (data) => apiClient.post('/attendance/check-in', data),
   checkOut: (data) => apiClient.post('/attendance/check-out', data),
 
@@ -125,6 +165,7 @@ export const api = {
 
   // Notifications
   getNotifications: () => apiClient.get('/notifications'),
+  getUnreadNotificationCount: () => apiClient.get('/notifications/unread-count'),
   markNotificationRead: (id) => apiClient.put(`/notifications/${id}/read`),
   markAllNotificationsRead: () => apiClient.post('/notifications/mark-all-read'),
 
@@ -141,6 +182,7 @@ export const api = {
   // Settings
   getSettings: () => apiClient.get('/settings'),
   updateSettings: (data) => apiClient.put('/settings', data),
+  getSettingsStatus: () => apiClient.get('/settings/status'),
 
   // Profile
   getProfile: () => apiClient.get('/profile'),
@@ -155,6 +197,11 @@ export const api = {
   // AI Intelligence
   sendChatMessage: (message, role, context) => apiClient.post('/chat', { message, role, context }),
   getAIInsights: (type, department) => apiClient.post('/ai-insights', { type, department }),
+
+  // Workforce planning simulation and hiring plans
+  simulateWorkforcePlan: (payload) => apiClient.post('/ai/workforce-simulate', payload),
+  createHiringPlan: (payload) => apiClient.post('/ai/hiring-plans', payload),
+  getHiringPlans: () => apiClient.get('/ai/hiring-plans'),
 
   // Executive Dashboard Analytics
   getDashboardAnalytics: () => apiClient.get('/analytics/dashboard'),

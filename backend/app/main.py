@@ -30,7 +30,10 @@ logger = logging.getLogger("uvicorn.error")
 async def lifespan(app: FastAPI):
     """Lifecycle events manager for MongoDB connections and automation scheduler."""
     logger.info("Initializing Enterprise FastAPI Backend Application...")
-    await connect_to_mongo()
+    try:
+        await connect_to_mongo()
+    except Exception:
+        logger.warning("MongoDB connection failed on startup — will retry on first request if connection is re-established.")
 
     # Start automation scheduler if enabled (best-effort)
     try:
@@ -81,9 +84,11 @@ if not trusted_origins:
     ]
 
 # Configure CORS for the known browser-facing frontend origins only.
+# allow_origin_regex covers Vercel preview & production deployments automatically.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=trusted_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With", "X-CSRF-Token"],

@@ -2,9 +2,14 @@ from fastapi import APIRouter, Request
 from backend.app.routers.auth import require_hr_admin
 from backend.app.models.schemas import DashboardMetrics
 from backend.app.services.workforce_services import (
-    EmployeeService, LeaveService, ShiftService, PayrollService, AttendanceService, AIPredictionService
+    EmployeeService,
+    LeaveService,
+    ShiftService,
+    PayrollService,
+    AttendanceService,
+    AIPredictionService,
+    PerformanceService
 )
-
 router = APIRouter(prefix="/analytics", tags=["Executive Analytics & KPIs"])
 
 @router.get("/dashboard", response_model=DashboardMetrics)
@@ -32,6 +37,11 @@ async def get_dashboard_metrics(request: Request):
         if attendance_total else "N/A"
     )
 
+    # Average productivity score from performance records
+    productivity_score = (
+        await PerformanceService.get_average_productivity_score()
+    )
+
     # Attrition risk count from AI predictions
     attrition_risk_count = await AIPredictionService.count_attrition_above(0.7)
 
@@ -39,6 +49,7 @@ async def get_dashboard_metrics(request: Request):
         totalEmployees=total_emp,
         activeEmployees=active_emp,
         attendanceRate=attendance_rate,
+        productivityScore=productivity_score,
         attritionRiskCount=attrition_risk_count,
         totalMonthlyPayroll=total_payroll,
         pendingLeaveRequests=pending_leaves,

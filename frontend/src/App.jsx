@@ -32,6 +32,7 @@ import { SettingsPage } from './components/settings/SettingsPage';
 import { AIChatbotModal } from './components/ai/AIChatbotModal';
 import { NotificationsDrawer } from './components/notifications/NotificationsDrawer';
 import { ChangePasswordModal } from './components/auth/ChangePasswordModal';
+import { ProfileCenter } from './components/profile/ProfileCenter';
 
 const AUTH_USER_KEY = 'nexus_hrms_auth_user';
 
@@ -76,6 +77,7 @@ export function App() {
         throw new Error('Authentication failed.');
       }
       persistAuthSession(token, user);
+      resetEmployeeScopedData();
       setAuthenticatedUser(user);
       setIsAuthenticated(true);
       // Land employees on their personal dashboard after login
@@ -119,14 +121,19 @@ export function App() {
       console.warn('Logout request failed:', error);
     } finally {
       clearAuthSession();
+      resetEmployeeScopedData();
       setAuthenticatedUser(null);
       setProfile(null);
       setIsAuthenticated(false);
-      setSelectedAttendanceEmployeeId('');
       setAuthError('');
       setActiveTab('dashboard');
     }
   };
+
+  const handleOpenProfile = () => {
+    setActiveTab('profile');
+  };
+
 
   // Domain States
   const [employees, setEmployees] = useState([]);
@@ -142,6 +149,13 @@ export function App() {
   const [attendanceLoading, setAttendanceLoading] = useState(false);
   const [attendanceError, setAttendanceError] = useState(null);
   const [attendancePagination, setAttendancePagination] = useState({ total: 0, page: 1, size: 50, pages: 1 });
+  const [attendanceFilters, setAttendanceFilters] = useState({
+    department: 'ALL',
+    employeeId: '',
+    status: 'ALL',
+    startDate: '',
+    endDate: '',
+  });
   const [leaves, setLeaves] = useState([]);
   const [leaveLoading, setLeaveLoading] = useState(false);
   const [leaveError, setLeaveError] = useState(null);
@@ -160,7 +174,31 @@ export function App() {
   const [notifications, setNotifications] = useState([]);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [notificationsError, setNotificationsError] = useState(null);
+  const [unreadNotificationsCount, setUnreadNotificationsCount] = useState(0);
+  const [notificationFocus, setNotificationFocus] = useState(null);
   const [profile, setProfile] = useState(null);
+
+  const resetEmployeeScopedData = () => {
+    setAttendance([]);
+    setLeaves([]);
+    setShifts([]);
+    setTimesheets([]);
+    setPayroll([]);
+    setNotifications([]);
+    setUnreadNotificationsCount(0);
+    setNotificationFocus(null);
+    setLeaveBalance({
+      casualLeave: { total: 0, used: 0, remaining: 0 },
+      sickLeave: { total: 0, used: 0, remaining: 0 },
+      earnedLeave: { total: 0, used: 0, remaining: 0 },
+      parentalLeave: { total: 0, used: 0, remaining: 0 }
+    });
+    setSelectedAttendanceEmployeeId('');
+    setSelectedLeaveEmployeeId('');
+    setSelectedShiftEmployeeId('');
+    setSelectedTimesheetEmployeeId('');
+  };
+
   // Default to non-privileged role when role is missing to avoid accidental privilege escalation in the UI
   const userRole = normalizeRole(authenticatedUser?.role || profile?.role || 'EMPLOYEE');
   const currentEmpName = authenticatedUser?.name || profile?.name || 'User';
@@ -294,6 +332,7 @@ export function App() {
         read: notification.read ?? notification.isRead ?? false
       }));
       setNotifications(mapped);
+      await fetchUnreadNotificationCount();
     } catch (err) {
       console.error('Failed to load notifications:', err);
       const message = err?.response?.data?.detail || err.message || 'Failed to load notifications';
@@ -301,6 +340,17 @@ export function App() {
       setNotifications([]);
     } finally {
       setNotificationsLoading(false);
+    }
+  }
+
+  async function fetchUnreadNotificationCount() {
+    try {
+      const response = await api.getUnreadNotificationCount();
+      const count = Number(response?.count ?? 0);
+      setUnreadNotificationsCount(Number.isFinite(count) ? count : 0);
+    } catch (err) {
+      console.error('Failed to load unread notification count:', err);
+      setUnreadNotificationsCount(0);
     }
   }
 
@@ -360,7 +410,12 @@ export function App() {
   // Fetch attendance from API (read-only integration)
   useEffect(() => {
     if (!isAuthenticated) return;
-    fetchAttendance();
+    fetchAttendance(attendanceFilters);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, attendanceFilters.department, attendanceFilters.employeeId, attendanceFilters.status, attendanceFilters.startDate, attendanceFilters.endDate]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
     fetchHolidays();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
@@ -376,9 +431,7 @@ export function App() {
     setHolidaysLoading(true);
     setHolidaysError(null);
     try {
-      const now = new Date();
-      const monthParam = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-      const resp = await api.getHolidays(monthParam);
+      const resp = await api.getHolidays();
       const items = Array.isArray(resp) ? resp : [];
       setHolidays(items);
     } catch (err) {
@@ -434,11 +487,35 @@ export function App() {
     }
   }
 
+  function normalizeAttendanceFilters(filters = {}) {
+    const normalized = {
+      department: filters.department || 'ALL',
+      employeeId: filters.employeeId || '',
+      status: filters.status || 'ALL',
+      startDate: filters.startDate || '',
+      endDate: filters.endDate || '',
+    };
+
+    if (normalized.department === 'ALL' || !normalized.department) delete normalized.department;
+    if (!normalized.employeeId) delete normalized.employeeId;
+    if (normalized.status === 'ALL' || !normalized.status) delete normalized.status;
+    if (normalized.status === 'Currently Working' || normalized.status === 'Checked Out') {
+      normalized.status = 'Present';
+    }
+    if (!normalized.startDate) delete normalized.startDate;
+    if (!normalized.endDate) delete normalized.endDate;
+
+    return normalized;
+  }
+
   async function fetchAttendance(params = {}) {
     setAttendanceLoading(true);
     setAttendanceError(null);
     try {
-      const finalParams = canViewTeam ? params : { ...params, empId: currentEmpId || selectedAttendanceEmployeeId };
+      const cleanedParams = normalizeAttendanceFilters(params);
+      const finalParams = canViewTeam ? cleanedParams : { ...cleanedParams, employeeId: currentEmpId || selectedAttendanceEmployeeId };
+      finalParams.page = params.page || 1;
+      finalParams.size = params.size || 50;
       const resp = await api.getAttendance(finalParams);
       const items = resp && resp.items ? resp.items : [];
       const pagination = {
@@ -634,25 +711,45 @@ export function App() {
     );
   });
 
-  const handleCheckIn = async () => {
+  const handleCheckIn = async (options = {}) => {
     if (!selectedAttendanceEmployeeId) {
-      alert('Please select an employee before checking in.');
+      setGpsStatus({ state: 'error', message: 'Please select an employee before checking in.', distance: null });
       return;
     }
 
-    try {
-      setGpsStatus({ state: 'requesting', message: 'Requesting location...', distance: null });
-      const coords = await requestCurrentLocation();
-      setGpsStatus({ state: 'verifying', message: 'Verifying location...', distance: null });
+    const selectedMethod = (options.verificationMethod || options.method || '').toString().trim();
+    const normalizedMethod = String(selectedMethod).toUpperCase().replace(/[^A-Z0-9]/g, '_');
+    const isDirectMethod = ['DIRECT', 'DIRECT_ATTENDANCE', 'DIRECT_CHECK_IN_CHECK_OUT', 'DIRECT_CHECK_IN', 'DIRECT_CHECK_OUT', 'DIRECT_CHECKIN', 'DIRECT_CHECKOUT'].includes(normalizedMethod);
 
-      const record = await api.checkIn({
+    try {
+      let coords = {};
+      if (!isDirectMethod) {
+        setGpsStatus({ state: 'requesting', message: 'Requesting location...', distance: null });
+        coords = await requestCurrentLocation();
+        setGpsStatus({ state: 'verifying', message: 'Verifying location...', distance: null });
+      } else {
+        setGpsStatus({
+          state: 'success',
+          message: 'Direct attendance mode is ready. You can securely start or end your workday.',
+          distance: null,
+        });
+      }
+
+      const payload = {
         empId: selectedAttendanceEmployeeId,
         ...coords,
-      });
+        verificationMethod: selectedMethod || null,
+        verificationStatus: options.verificationStatus || null,
+        workMode: options.workMode || null,
+        workContext: options.workContext || null,
+        allowedVerificationMethods: options.allowedVerificationMethods || null,
+      };
+
+      const record = await api.checkIn(payload);
 
       const checkInVal = record?.checkIn || record?.CheckIn || null;
       const distance = record?.distanceFromOffice ?? record?.DistanceFromOffice ?? null;
-      const geofenceStatus = record?.geofenceStatus || record?.GeofenceStatus || 'INSIDE';
+      const geofenceStatus = record?.geofenceStatus || record?.GeofenceStatus || (isDirectMethod ? 'DIRECT' : 'INSIDE');
       if (checkInVal) {
         setIsCheckedIn(true);
         setCurrentCheckInTime(checkInVal);
@@ -661,9 +758,11 @@ export function App() {
       }
       setGpsStatus({
         state: 'success',
-        message: geofenceStatus === 'INSIDE'
-          ? `Attendance verified successfully${distance !== null ? ` • Distance from office: ${Math.round(distance)} m` : ''}.`
-          : 'Attendance verification failed.',
+        message: isDirectMethod
+          ? 'Direct attendance approved. Your workday has started successfully.'
+          : (geofenceStatus === 'INSIDE'
+            ? `Attendance verified successfully${distance !== null ? ` • Distance from office: ${Math.round(distance)} m` : ''}.`
+            : 'Attendance verification failed.'),
         distance,
       });
       await fetchAttendance();
@@ -674,19 +773,33 @@ export function App() {
     }
   };
 
-  const handleCheckOut = async () => {
+  const handleCheckOut = async (options = {}) => {
     if (!selectedAttendanceEmployeeId) {
       alert('Please select an employee before checking out.');
       return;
     }
 
+    const selectedMethod = (options.verificationMethod || options.method || '').toString().trim();
+    const normalizedMethod = String(selectedMethod).toUpperCase().replace(/[^A-Z0-9]/g, '_');
+    const isDirectMethod = ['DIRECT', 'DIRECT_ATTENDANCE', 'DIRECT_CHECK_IN_CHECK_OUT', 'DIRECT_CHECK_IN', 'DIRECT_CHECK_OUT', 'DIRECT_CHECKIN', 'DIRECT_CHECKOUT'].includes(normalizedMethod);
+
     try {
-      let payload = { empId: selectedAttendanceEmployeeId };
-      if (navigator && navigator.geolocation) {
+      let payload = {
+        empId: selectedAttendanceEmployeeId,
+        verificationMethod: selectedMethod || null,
+        verificationStatus: options.verificationStatus || null,
+      };
+      if (!isDirectMethod && navigator && navigator.geolocation) {
         setGpsStatus({ state: 'requesting', message: 'Requesting location...', distance: null });
         const coords = await requestCurrentLocation();
         setGpsStatus({ state: 'verifying', message: 'Verifying location...', distance: null });
         payload = { ...payload, ...coords };
+      } else if (isDirectMethod) {
+        setGpsStatus({
+          state: 'success',
+          message: 'Direct attendance workflow is active. Ending your workday now.',
+          distance: null,
+        });
       }
 
       const record = await api.checkOut(payload);
@@ -701,7 +814,7 @@ export function App() {
       }
       setGpsStatus({
         state: 'success',
-        message: distance !== null ? `Location verified • Distance from office: ${Math.round(distance)} m` : 'Attendance checked out successfully.',
+        message: isDirectMethod ? 'Workday completed successfully using direct attendance.' : 'Attendance completed successfully.',
         distance,
       });
       await fetchAttendance();
@@ -713,7 +826,8 @@ export function App() {
   };
 
   const handleApplyLeave = async (newLeave) => {
-    if (!selectedLeaveEmployeeId) {
+    const effectiveEmployeeId = newLeave?.empId || selectedLeaveEmployeeId || currentEmpId;
+    if (!effectiveEmployeeId) {
       alert('Please select an employee before submitting a leave request.');
       return;
     }
@@ -721,7 +835,7 @@ export function App() {
     try {
       await api.submitLeave({
         ...newLeave,
-        empId: selectedLeaveEmployeeId,
+        empId: effectiveEmployeeId,
         empName: newLeave.empName || '',
         department: newLeave.department || '',
         status: 'Pending'
@@ -767,13 +881,18 @@ export function App() {
   };
 
   const handleRequestShift = async (newShiftReq) => {
-    if (!newShiftReq?.empId) {
+    const effectiveEmployeeId = newShiftReq?.empId || currentEmpId || selectedShiftEmployeeId;
+    if (!effectiveEmployeeId) {
       alert('Please select an employee before submitting a shift request.');
       return;
     }
 
     try {
-      await api.submitShiftRequest(newShiftReq);
+      await api.submitShiftRequest({
+        ...newShiftReq,
+        empId: effectiveEmployeeId,
+        status: newShiftReq?.status || 'Pending'
+      });
       await fetchShifts();
     } catch (err) {
       const message = err?.response?.data?.detail || err.message || 'Failed to submit shift request';
@@ -865,16 +984,41 @@ export function App() {
     }
   };
 
-  const handleMarkNotificationAsRead = async (id) => {
-    if (!id) return;
+  const resolveNotificationTarget = (notification) => {
+    if (!notification) return null;
+
+    const rawType = String(notification?.relatedEntityType || notification?.metadata?.relatedEntityType || notification?.type || notification?.notificationType || '').toLowerCase();
+    const requestId = notification?.relatedEntityId || notification?.metadata?.requestId || notification?.requestId || null;
+    const notificationType = String(notification?.notificationType || notification?.type || '').toLowerCase();
+
+    if (rawType === 'leave' || notificationType.includes('leave')) {
+      return { tab: 'leave', requestId: requestId || notification?.id || null, type: 'leave' };
+    }
+    if (rawType === 'shift' || notificationType.includes('shift')) {
+      return { tab: 'shifts', requestId: requestId || notification?.id || null, type: 'shift' };
+    }
+    return null;
+  };
+
+  const handleMarkNotificationAsRead = async (notificationOrId) => {
+    const notification = typeof notificationOrId === 'object' && notificationOrId ? notificationOrId : notifications.find((item) => item.id === notificationOrId) || null;
+    const targetId = notification?.id || notificationOrId;
+    if (!targetId) return;
+
+    const target = resolveNotificationTarget(notification);
 
     try {
-      await api.markNotificationRead(id);
+      await api.markNotificationRead(targetId);
       setNotifications((prev) =>
-        prev.map((notification) =>
-          notification.id === id ? { ...notification, read: true } : notification
+        prev.map((item) =>
+          item.id === targetId ? { ...item, read: true, isRead: true, status: 'Read' } : item
         )
       );
+      setUnreadNotificationsCount((prev) => Math.max(0, prev - (notification?.read || notification?.isRead ? 0 : 1)));
+      if (target?.requestId) {
+        setNotificationFocus(target);
+        setActiveTab(target.tab);
+      }
     } catch (err) {
       console.error('Failed to mark notification as read:', err);
       const message = err?.response?.data?.detail || err.message || 'Failed to mark notification as read';
@@ -885,15 +1029,15 @@ export function App() {
   const handleClearAllNotifications = async () => {
     try {
       await api.markAllNotificationsRead();
-      setNotifications((prev) => prev.map((notification) => ({ ...notification, read: true })));
+      setNotifications((prev) => prev.map((notification) => ({ ...notification, read: true, isRead: true, status: 'Read' })));
+      setUnreadNotificationsCount(0);
+      await fetchUnreadNotificationCount();
     } catch (err) {
       console.error('Failed to mark all notifications as read:', err);
       const message = err?.response?.data?.detail || err.message || 'Failed to mark all notifications as read';
       setNotificationsError(message);
     }
   };
-
-  const unreadNotificationsCount = notifications.filter((n) => !n.read).length;
 
   if (!isAuthenticated) {
     return <LoginPage onLogin={handleLogin} isLoading={authLoading} authError={authError} />;
@@ -915,6 +1059,7 @@ export function App() {
         onLogout={handleLogout}
         onRequestChangePassword={() => setShowChangePasswordForm(true)}
         onProfileUpdated={handleProfileUpdated}
+        onOpenProfile={handleOpenProfile}
       />
 
       <div className="flex">
@@ -953,6 +1098,25 @@ export function App() {
           }}
         />
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
+          {activeTab === 'profile' && (
+            <ProfileCenter
+              profile={profile}
+              userRole={userRole}
+              currentEmpName={currentEmpName}
+              currentEmpId={currentEmpId}
+              employees={employees}
+              attendance={attendance}
+              leaves={leaves}
+              shifts={shifts}
+              payroll={payroll}
+              notifications={notifications}
+              leaveBalance={leaveBalance}
+              onLogout={handleLogout}
+              onRequestChangePassword={() => setShowChangePasswordForm(true)}
+              onProfileUpdated={handleProfileUpdated}
+            />
+          )}
+
           {activeTab === 'dashboard' && userRole === 'MANAGER' && (
             <ManagerDashboard
               employees={employees}
@@ -984,6 +1148,9 @@ export function App() {
               leaveBalance={leaveBalance}
               payroll={payroll}
               shifts={shifts}
+              holidays={holidays}
+              holidaysLoading={holidaysLoading}
+              holidaysError={holidaysError}
               profile={profile}
               dashboardMetrics={dashboardMetrics}
               dashboardLoading={dashboardLoading}
@@ -1014,6 +1181,8 @@ export function App() {
               attendancePagination={attendancePagination}
               employees={employees}
               selectedEmployeeId={selectedAttendanceEmployeeId}
+              currentEmpId={currentEmpId}
+              currentEmpName={currentEmpName}
               onSelectEmployee={setSelectedAttendanceEmployeeId}
               onCheckIn={handleCheckIn}
               onCheckOut={handleCheckOut}
@@ -1026,13 +1195,16 @@ export function App() {
               holidaysError={holidaysError}
               userRole={userRole}
               gpsStatus={gpsStatus}
+              attendanceFilters={attendanceFilters}
+              onAttendanceFiltersChange={(nextFilters) => setAttendanceFilters((prev) => ({ ...prev, ...nextFilters }))}
+              onResetAttendanceFilters={() => setAttendanceFilters({ department: 'ALL', employeeId: '', status: 'ALL', startDate: '', endDate: '' })}
             />
           )}
 
           {activeTab === 'leave' && (
             <LeaveManagement
               employees={employees}
-              selectedEmployeeId={selectedLeaveEmployeeId}
+              selectedEmployeeId={userRole === 'EMPLOYEE' ? (currentEmpId || selectedLeaveEmployeeId || '') : selectedLeaveEmployeeId}
               onSelectEmployee={setSelectedLeaveEmployeeId}
               leaves={leaves}
               leaveBalance={leaveBalance}
@@ -1042,6 +1214,8 @@ export function App() {
               onApproveLeave={handleApproveLeave}
               onRejectLeave={handleRejectLeave}
               userRole={userRole}
+              currentEmpId={currentEmpId}
+              focusedRequestId={notificationFocus?.type === 'leave' ? notificationFocus.requestId : null}
             />
           )}
 
@@ -1056,6 +1230,7 @@ export function App() {
               onRejectShift={handleRejectShiftRequest}
               userRole={userRole}
               currentEmpId={currentEmpId}
+              focusedRequestId={notificationFocus?.type === 'shift' ? notificationFocus.requestId : null}
             />
           )}
 
@@ -1080,10 +1255,11 @@ export function App() {
               payrollError={payrollError}
               userRole={userRole}
               currentEmpId={currentEmpId}
+              currentEmpName={currentEmpName}
             />
           )}
 
-          {activeTab === 'ai_planning' && <AIWorkforcePlanning employees={employees} />}
+          {activeTab === 'ai_planning' && <AIWorkforcePlanning employees={employees} attendance={attendance} leaves={leaves} payroll={payroll} /> }
 
           {activeTab === 'chatbot' && (
             <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -1105,50 +1281,89 @@ export function App() {
           {activeTab === 'settings' && <SettingsPage />}
 
           {activeTab === 'audit' && (
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
-              <h2 className="text-base font-bold mb-1">Audit Trail & Role-Based Access Control (RBAC)</h2>
-              <p className="text-xs text-slate-500 mb-4">Security logging and permission auditing</p>
-
-              {auditLogsLoading && (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-300">
-                  Loading audit logs...
-                </div>
-              )}
-
-              {!auditLogsLoading && auditLogsError && (
-                <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-rose-800 text-sm">
-                  Error loading audit logs: {auditLogsError}
-                </div>
-              )}
-
-              {!auditLogsLoading && !auditLogsError && auditLogs.length === 0 && (
-                <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5 text-center text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
-                  No audit records available.
-                </div>
-              )}
-
-              {!auditLogsLoading && !auditLogsError && auditLogs.length > 0 && (
-                <div className="space-y-2 text-xs font-mono">
-                  {auditLogs.map((log) => (
-                    <div key={log.id} className="p-2.5 rounded bg-slate-50 dark:bg-slate-800">
-                      <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                        <span className="font-bold text-slate-800 dark:text-slate-100">[{log.timestamp || 'N/A'}]</span>
-                        <span className="font-semibold text-indigo-600 dark:text-indigo-400">{log.module || 'Unknown Module'}</span>
-                        <span className="text-slate-500 dark:text-slate-400">:</span>
-                        <span className="font-semibold text-slate-700 dark:text-slate-200">{log.action || 'No action'}</span>
-                        <span className="ml-auto rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-                          {log.status || 'UNKNOWN'}
-                        </span>
-                      </div>
-                      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500 dark:text-slate-400">
-                        <span>Actor: {log.actor || 'N/A'}</span>
-                        <span>ID: {log.id || 'N/A'}</span>
-                        <span>IP: {log.ipAddress || 'N/A'}</span>
-                      </div>
+            <div className="space-y-6">
+              <div className="rounded-3xl border border-indigo-200 bg-gradient-to-r from-slate-950 via-indigo-950 to-violet-950 p-6 text-white shadow-xl shadow-indigo-950/25">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.22em] text-indigo-100">
+                      Security & governance
                     </div>
-                  ))}
+                    <h2 className="mt-4 text-2xl font-black tracking-[-0.04em] text-white">Audit Intelligence & Access Control Center</h2>
+                    <p className="mt-2 max-w-2xl text-sm text-slate-300">Monitor sensitive activity, policy changes, authentication events and role-based access across the enterprise.</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-left">
+                    <div className="rounded-2xl border border-white/10 bg-white/5 p-3 backdrop-blur-sm">
+                      <div className="text-[10px] uppercase tracking-[0.18em] text-slate-300">Total events</div>
+                      <div className="mt-1 text-lg font-black text-white">{auditLogs.length || 0}</div>
+                    </div>
+                    <div className="rounded-2xl border border-white/10 bg-white/5 p-3 backdrop-blur-sm">
+                      <div className="text-[10px] uppercase tracking-[0.18em] text-slate-300">Live status</div>
+                      <div className="mt-1 text-lg font-black text-emerald-300">Secure</div>
+                    </div>
+                  </div>
                 </div>
-              )}
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Audit coverage</div>
+                  <div className="mt-2 text-2xl font-black text-slate-900 dark:text-white">{auditLogs.length || 0}</div>
+                  <div className="mt-1 text-[11px] text-slate-500">enterprise events tracked</div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Success rate</div>
+                  <div className="mt-2 text-2xl font-black text-emerald-600">{auditLogs.length ? '100%' : '—'}</div>
+                  <div className="mt-1 text-[11px] text-slate-500">status verified</div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Access review</div>
+                  <div className="mt-2 text-2xl font-black text-indigo-600">RBAC</div>
+                  <div className="mt-1 text-[11px] text-slate-500">role-based control active</div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                {auditLogsLoading && (
+                  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
+                    Loading audit logs...
+                  </div>
+                )}
+
+                {!auditLogsLoading && auditLogsError && (
+                  <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-rose-800 text-sm">
+                    Error loading audit logs: {auditLogsError}
+                  </div>
+                )}
+
+                {!auditLogsLoading && !auditLogsError && auditLogs.length === 0 && (
+                  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
+                    No audit records available.
+                  </div>
+                )}
+
+                {!auditLogsLoading && !auditLogsError && auditLogs.length > 0 && (
+                  <div className="space-y-3 text-xs">
+                    {auditLogs.map((log) => (
+                      <div key={log.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 transition hover:border-violet-200 hover:bg-violet-50/50 dark:border-slate-800 dark:bg-slate-800/70 dark:hover:border-violet-900">
+                        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                          <span className="font-bold text-slate-800 dark:text-slate-100">[{log.timestamp || 'N/A'}]</span>
+                          <span className="rounded-full bg-indigo-100 px-2 py-0.5 font-bold text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">{log.module || 'Unknown Module'}</span>
+                          <span className="font-semibold text-slate-700 dark:text-slate-200">{log.action || 'No action'}</span>
+                          <span className="ml-auto rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-bold text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                            {log.status || 'UNKNOWN'}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500 dark:text-slate-400">
+                          <span>Actor: {log.actor || 'N/A'}</span>
+                          <span>ID: {log.id || 'N/A'}</span>
+                          <span>IP: {log.ipAddress || 'N/A'}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </main>

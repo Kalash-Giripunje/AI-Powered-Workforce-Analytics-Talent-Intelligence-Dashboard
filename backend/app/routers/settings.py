@@ -63,3 +63,32 @@ async def update_system_settings(
     )
 
     return settings
+
+
+@router.get('/status')
+async def get_system_status(request: Request):
+    """Return read-only operational status flags for secure integrations and database connectivity.
+
+    This endpoint intentionally does NOT return secrets or API keys. It only reports boolean/config flags
+    and non-sensitive indicators that the frontend can show in integration cards.
+    """
+    await require_hr_admin(request)
+
+    from backend.app.config import settings as app_settings
+    db = get_database()
+
+    mongo_connected = False
+    try:
+        if db is not None:
+            # perform a cheap ping - do not reveal connection details
+            await db.command('ping')
+            mongo_connected = True
+    except Exception:
+        mongo_connected = False
+
+    return {
+        'geminiConfigured': bool(app_settings.GEMINI_API_KEY),
+        'activeAIModel': app_settings.GEMINI_API_KEY and 'gemini-2.5-flash' or None,
+        'mongoConnected': mongo_connected,
+        'vectorEngine': 'local-embeddings' if app_settings.GEMINI_API_KEY else None
+    }

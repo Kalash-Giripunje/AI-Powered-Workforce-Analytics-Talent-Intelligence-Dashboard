@@ -1,3 +1,6 @@
+import re
+from datetime import date, datetime
+
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Dict, Any, List
 
@@ -53,12 +56,96 @@ class UserProfile(BaseModel):
     empId: Optional[str] = None
     name: Optional[str] = None
     email: Optional[str] = None
+    phone: Optional[str] = None
+    personalEmail: Optional[str] = None
     role: Optional[str] = None
     department: Optional[str] = None
+    jobRole: Optional[str] = None
+    dateOfBirth: Optional[str] = None
+    gender: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = None
+    postalCode: Optional[str] = None
+    emergencyContactName: Optional[str] = None
+    emergencyContactRelationship: Optional[str] = None
+    emergencyContactPhone: Optional[str] = None
+    skills: Optional[List[str]] = None
+    education: Optional[str] = None
+    qualifications: Optional[str] = None
     avatarId: Optional[str] = None
     avatar: Optional[str] = None
     mfaEnabled: Optional[bool] = None
     lastLogin: Optional[str] = None
+
+    @field_validator("phone", "emergencyContactPhone")
+    @classmethod
+    def validate_phone_value(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        if not cleaned:
+            return None
+        if not re.match(r"^\+?[0-9\s\-()]{7,20}$", cleaned):
+            raise ValueError("Phone number must contain 7 to 20 digits, spaces, parentheses, or dashes.")
+        return cleaned
+
+    @field_validator("personalEmail")
+    @classmethod
+    def validate_personal_email(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        if not cleaned:
+            return None
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", cleaned):
+            raise ValueError("Personal email must be a valid email address.")
+        return cleaned
+
+    @field_validator("dateOfBirth")
+    @classmethod
+    def validate_birth_date(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        if not cleaned:
+            return None
+        parsed = None
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d"):
+            try:
+                parsed = datetime.strptime(cleaned, fmt).date()
+                break
+            except ValueError:
+                pass
+        if parsed is None:
+            try:
+                parsed = date.fromisoformat(cleaned)
+            except ValueError as exc:
+                raise ValueError("Date of birth must be a valid ISO date or yyyy-mm-dd value.") from exc
+        if parsed > date.today():
+            raise ValueError("Date of birth cannot be in the future.")
+        return parsed.isoformat()
+
+    @field_validator("skills")
+    @classmethod
+    def validate_skills(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if value is None:
+            return None
+        cleaned = []
+        seen = set()
+        for item in value:
+            if item is None:
+                continue
+            normalized = str(item).strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(normalized)
+        return cleaned or None
 
     @field_validator("avatarId")
     @classmethod

@@ -147,7 +147,7 @@ async def submit_leave_request(request: Request, payload: LeaveRequestBase):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to submit leave for this employee.")
 
     try:
-        return await LeaveService.submit(payload)
+        return await LeaveService.submit(payload, actor_user=auth_user)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -171,6 +171,8 @@ async def update_leave_status(
         db = get_database()
         if db is None:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="MongoDB database is not connected.")
+
+        # First try to locate by MongoDB _id as a string, then by ObjectId, then by legacy RequestID
         current = await db.leaves.find_one({"_id": leave_id}, {"_id": 0})
         if not current:
             try:
@@ -179,7 +181,14 @@ async def update_leave_status(
             except Exception:
                 current = None
         if not current:
+            # Fallback: allow managers to reference legacy RequestID values (e.g., LR-000020)
+            try:
+                current = await db.leaves.find_one({"RequestID": leave_id}, {"_id": 0})
+            except Exception:
+                current = None
+        if not current:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Leave request ID '{leave_id}' not found.")
+
         team_ids = set(await get_manager_team_emp_ids(auth_user) or [])
         emp_id = str(current.get("EmpID") or "").strip()
         if emp_id not in team_ids:
@@ -188,7 +197,8 @@ async def update_leave_status(
     try:
         updated = await LeaveService.update_status(
             leave_id,
-            update
+            update,
+            actor_user=auth_user,
         )
     except ValueError as exc:
         raise HTTPException(

@@ -62,6 +62,10 @@ async def get_user_profile(request: Request):
         profile_doc["role"] = payload.get("role") or (account.get("role") if account else profile_doc.get("role"))
         profile_doc["name"] = profile_doc.get("name") or payload.get("name") or (emp_doc.get("EmployeeName") if emp_doc else None)
         profile_doc["email"] = profile_doc.get("email") or payload.get("email") or (emp_doc.get("Email") if emp_doc else None)
+        profile_doc["phone"] = profile_doc.get("phone") or profile_doc.get("Phone") or None
+        profile_doc["personalEmail"] = profile_doc.get("personalEmail") or profile_doc.get("personal_email") or None
+        profile_doc["jobRole"] = profile_doc.get("jobRole") or profile_doc.get("JobRole") or (emp_doc.get("JobRole") if emp_doc else None)
+        profile_doc["department"] = profile_doc.get("department") or profile_doc.get("Department") or (emp_doc.get("Department") if emp_doc else None)
 
         avatar_id = profile_doc.get("avatarId") or profile_doc.get("avatar")
         if isinstance(avatar_id, str):
@@ -78,6 +82,21 @@ async def get_user_profile(request: Request):
 
         profile_doc.setdefault("mfaEnabled", True)
         profile_doc.setdefault("lastLogin", None)
+        profile_doc.setdefault("phone", None)
+        profile_doc.setdefault("personalEmail", None)
+        profile_doc.setdefault("dateOfBirth", None)
+        profile_doc.setdefault("gender", None)
+        profile_doc.setdefault("address", None)
+        profile_doc.setdefault("city", None)
+        profile_doc.setdefault("state", None)
+        profile_doc.setdefault("country", None)
+        profile_doc.setdefault("postalCode", None)
+        profile_doc.setdefault("emergencyContactName", None)
+        profile_doc.setdefault("emergencyContactRelationship", None)
+        profile_doc.setdefault("emergencyContactPhone", None)
+        profile_doc.setdefault("skills", None)
+        profile_doc.setdefault("education", None)
+        profile_doc.setdefault("qualifications", None)
         return UserProfile(**profile_doc)
 
     # No per-user profile found: synthesize safely from account and employee.
@@ -87,8 +106,24 @@ async def get_user_profile(request: Request):
         "empId": emp_id,
         "name": None,
         "email": payload.get("email") or (account.get("email") if account else None),
+        "phone": None,
+        "personalEmail": None,
         "role": payload.get("role") or (account.get("role") if account else None),
         "department": None,
+        "jobRole": None,
+        "dateOfBirth": None,
+        "gender": None,
+        "address": None,
+        "city": None,
+        "state": None,
+        "country": None,
+        "postalCode": None,
+        "emergencyContactName": None,
+        "emergencyContactRelationship": None,
+        "emergencyContactPhone": None,
+        "skills": None,
+        "education": None,
+        "qualifications": None,
         "avatarId": None,
         "avatar": None,
         "mfaEnabled": True,
@@ -99,6 +134,8 @@ async def get_user_profile(request: Request):
         synthesized["name"] = emp_doc.get("EmployeeName") or payload.get("name")
         synthesized["email"] = synthesized.get("email") or emp_doc.get("Email")
         synthesized["department"] = emp_doc.get("Department")
+        synthesized["jobRole"] = emp_doc.get("JobRole")
+        synthesized["phone"] = emp_doc.get("Phone") or None
     else:
         synthesized["name"] = (account.get("name") if account else payload.get("name"))
 
@@ -151,12 +188,17 @@ async def update_user_profile(request: Request, profile: UserProfile):
         "role",
         "email",
         "department",
+        "jobRole",
         "status",
         "passwordHash",
         "passwordStatus",
         "mustChangePassword",
     }
     save_doc = {k: v for k, v in incoming.items() if k not in forbidden and k != "avatar"}
+
+    if isinstance(save_doc.get("skills"), list):
+        save_doc["skills"] = [str(item).strip() for item in save_doc["skills"] if str(item).strip()]
+        save_doc["skills"] = list(dict.fromkeys(save_doc["skills"]))
 
     avatar_id = incoming.get("avatarId")
     if avatar_id is not None:
@@ -168,6 +210,16 @@ async def update_user_profile(request: Request, profile: UserProfile):
     else:
         save_doc["avatarId"] = None
         save_doc["avatar"] = None
+
+    # Ensure user-controlled contact details remain separate from company-managed work records.
+    if "personalEmail" in save_doc and isinstance(save_doc["personalEmail"], str):
+        save_doc["personalEmail"] = save_doc["personalEmail"].strip() or None
+    if "phone" in save_doc and isinstance(save_doc["phone"], str):
+        save_doc["phone"] = save_doc["phone"].strip() or None
+    if "emergencyContactPhone" in save_doc and isinstance(save_doc["emergencyContactPhone"], str):
+        save_doc["emergencyContactPhone"] = save_doc["emergencyContactPhone"].strip() or None
+    if "postalCode" in save_doc and isinstance(save_doc["postalCode"], str):
+        save_doc["postalCode"] = save_doc["postalCode"].strip() or None
 
     # Enforce authoritative fields.
     save_doc["userId"] = account_user_id

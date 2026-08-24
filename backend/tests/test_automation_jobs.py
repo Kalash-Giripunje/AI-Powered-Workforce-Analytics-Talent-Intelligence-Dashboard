@@ -10,7 +10,7 @@ class FakeCollection:
     def __init__(self, docs=None):
         self.docs = list(docs or [])
 
-    def find(self, query=None):
+    def find(self, query=None, projection=None, *args, **kwargs):
         if query is None:
             return FakeCollection(self.docs)
         filtered = [doc for doc in self.docs if self._matches(doc, query)]
@@ -28,6 +28,17 @@ class FakeCollection:
     async def insert_one(self, doc):
         self.docs.append(doc)
         return doc
+
+    async def distinct(self, key, query=None):
+        if query is None:
+            return list({doc.get(key) for doc in self.docs if key in doc})
+        values = []
+        for doc in self.docs:
+            if self._matches(doc, query):
+                value = doc.get(key)
+                if value is not None:
+                    values.append(value)
+        return list(dict.fromkeys(values))
 
     def _matches(self, doc, query):
         if not isinstance(query, dict):

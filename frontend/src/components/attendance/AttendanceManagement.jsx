@@ -1,554 +1,1095 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  Clock,
+  Activity,
   AlertTriangle,
+  CalendarClock,
+  CalendarDays,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Filter,
+  MapPin,
   Search,
-  ShieldCheck
+  Sparkles,
+  TrendingUp,
+  Users,
+  X,
 } from 'lucide-react';
 
+const toText = (...values) => {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (text && text !== 'null' && text !== 'undefined' && text !== 'N/A' && text !== 'n/a') {
+      return text;
+    }
+  }
+  return '';
+};
+
+const toNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+};
+
+const getEmployeeId = (record) => toText(record?.empId, record?.EmpID, record?.EmpId, record?.employeeId);
+const getDepartment = (record) => toText(record?.department, record?.Department, record?.dept, 'Unassigned');
+
+const getEmployeeName = (record, employees = []) => {
+  const recordEmpId = getEmployeeId(record);
+  const employee = (employees || []).find((item) => {
+    const id = toText(item?.empId, item?.EmpID, item?.EmpId, item?.employeeId);
+    return id && recordEmpId && id.toLowerCase() === recordEmpId.toLowerCase();
+  });
+
+  if (employee) {
+    const composed = `${toText(employee?.firstName, employee?.FirstName)} ${toText(employee?.lastName, employee?.LastName)}`.trim();
+    if (composed) return composed;
+  }
+
+  const first = toText(record?.empName, record?.EmployeeName, record?.employeeName);
+  if (first) return first;
+  return recordEmpId || 'Employee';
+};
+
+const getInitials = (record) => {
+  const name = getEmployeeName(record);
+  return name
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || '')
+    .join('') || 'NA';
+};
+
+const toISODateLocal = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const formatDate = (value) => {
+  const text = toText(value);
+  if (!text) return '—';
+  const parsed = new Date(`${text}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return text;
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(parsed);
+};
+
+const formatTime = (value) => {
+  const text = toText(value);
+  if (!text) return '—';
+  if (text.length <= 5 && text.includes(':')) return text;
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+  }
+  return text;
+};
+
+const formatHours = (value) => {
+  const numeric = toNumber(value);
+  if (numeric <= 0 && value !== 0 && value !== '0') return '—';
+  return `${numeric.toFixed(numeric % 1 === 0 ? 0 : 2)} hrs`;
+};
+
+const normalizeHolidayDate = (value) => {
+  const text = toText(value);
+  if (!text) return null;
+  const parsed = new Date(`${text}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+};
+
+const toDateKey = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const parseLocalDateKey = (value) => {
+  const parsed = normalizeHolidayDate(value);
+  if (!parsed) return null;
+  return toDateKey(parsed);
+};
+
+const getAttendanceStatus = (record) => {
+  const raw = toText(record?.status, record?.AttendanceStatus, record?.attendanceStatus, record?.Status).toLowerCase();
+  const isLate = record?.LateArrival === true || record?.lateArrival === true || raw === 'late';
+  const hasCheckIn = Boolean(record?.checkIn || record?.CheckIn || record?.checkin || record?.CheckInTime);
+  const hasCheckOut = Boolean(record?.checkOut || record?.CheckOut || record?.checkout);
+
+  if (isLate) return 'Late';
+  if (raw === 'present' || raw === 'checked out' || raw === 'day completed' || raw === 'complete') return 'Present';
+  if (raw === 'working' || raw === 'currently working' || raw === 'in progress') return 'Working';
+  if (raw === 'absent' || raw === 'not checked in' || raw === 'no show' || raw === 'no-show') return 'Absent';
+  if (hasCheckIn && !hasCheckOut) return 'Working';
+  if (hasCheckIn && hasCheckOut) return 'Present';
+  return 'Absent';
+};
+
+const getStatusClasses = (status) => {
+  const value = (status || 'Absent').toLowerCase();
+  if (value === 'present') {
+    return 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:ring-emerald-900';
+  }
+  if (value === 'late') {
+    return 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:ring-amber-900';
+  }
+  if (value === 'working') {
+    return 'bg-sky-50 text-sky-700 ring-1 ring-sky-200 dark:bg-sky-950/50 dark:text-sky-300 dark:ring-sky-900';
+  }
+  return 'bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:ring-rose-900';
+};
+
+const DetailBlock = ({ label, value, tone = 'text-slate-700 dark:text-slate-200' }) => (
+  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 dark:border-slate-800 dark:bg-slate-950/60">
+    <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">{label}</div>
+    <div className={`mt-1 text-sm font-semibold ${tone}`}>{value}</div>
+  </div>
+);
+
 export const AttendanceManagement = ({
-  attendanceRecords,
+  attendanceRecords = [],
   attendanceLoading = false,
   attendanceError = null,
   attendancePagination = null,
   employees = [],
-  selectedEmployeeId,
-  onCheckIn,
-  onCheckOut,
-  isCheckedIn,
-  attendanceSessionCompleted = false,
   holidays = [],
   holidaysLoading = false,
   holidaysError = null,
+  selectedEmployeeId,
   userRole = 'HR_ADMIN',
-  gpsStatus = { state: 'idle', message: 'Location check will run before attendance is recorded.', distance: null }
+  gpsStatus = { state: 'idle', message: 'Location check will run before attendance is recorded.', distance: null },
+  onAttendanceFiltersChange = null,
+  onResetAttendanceFilters = null,
+  attendanceFilters = {},
 }) => {
-  const [filterStatus, setFilterStatus] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedRecord, setSelectedRecord] = useState(null);
 
-  // local UI animation flags for subtle success pulse
-  const [animateCheckIn, setAnimateCheckIn] = useState(false);
-  const [animateCheckOut, setAnimateCheckOut] = useState(false);
-  const prevCheckedRef = React.useRef(isCheckedIn);
+  const normalizedList = Array.isArray(attendanceRecords) ? attendanceRecords : [];
 
-  React.useEffect(() => {
-    // detect check-in transition (false -> true)
-    if (!prevCheckedRef.current && isCheckedIn) {
-      setAnimateCheckIn(true);
-      setTimeout(() => setAnimateCheckIn(false), 800);
-    }
-    // detect check-out transition: was checked in and now session completed
-    if (prevCheckedRef.current && !isCheckedIn && attendanceSessionCompleted) {
-      setAnimateCheckOut(true);
-      setTimeout(() => setAnimateCheckOut(false), 800);
-    }
-    prevCheckedRef.current = isCheckedIn;
-  }, [isCheckedIn, attendanceSessionCompleted]);
+  const departmentOptions = useMemo(() => {
+    const values = new Set();
+    normalizedList.forEach((record) => {
+      const department = getDepartment(record);
+      if (department && department !== 'Unassigned') values.add(department);
+    });
+    (employees || []).forEach((employee) => {
+      const department = toText(employee?.department, employee?.Department);
+      if (department) values.add(department);
+    });
+    return Array.from(values).sort();
+  }, [normalizedList, employees]);
 
-  // derive some HR-facing aggregates (today/date-aware)
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const filteredRecords = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const selectedStatus = (attendanceFilters?.status || 'ALL').toString();
+    const selectedDepartment = toText(attendanceFilters?.department || 'ALL');
+    const startDate = toText(attendanceFilters?.startDate);
+    const endDate = toText(attendanceFilters?.endDate);
 
-  const attByEmpToday = (attendanceRecords || []).reduce((acc, r) => {
-    const recDate = (r.date || r.Date || '').toString().slice(0, 10);
-    if (recDate === todayISO) {
-      acc[r.empId] = acc[r.empId] || [];
-      acc[r.empId].push(r);
-    }
-    return acc;
-  }, {});
+    return normalizedList.filter((record) => {
+      const employeeName = getEmployeeName(record, employees).toLowerCase();
+      const employeeId = getEmployeeId(record).toLowerCase();
+      const department = getDepartment(record).toLowerCase();
+      const recordDate = toText(record?.date, record?.Date).toLowerCase();
+      const status = getAttendanceStatus(record);
 
-  // Use attendance API pagination total for the KPI total when available.
-  const apiTotal = (attendancePagination && typeof attendancePagination.total === 'number') ? attendancePagination.total : null;
-  const activeEmployeesCount = apiTotal !== null
-    ? apiTotal
-    : (employees || []).filter((e) => {
-      const s = (e.status || e.EmploymentStatus || '').toString().toLowerCase();
-      return s === 'active';
-    }).length;
+      const matchesSearch =
+        !query ||
+        employeeName.includes(query) ||
+        employeeId.includes(query) ||
+        department.includes(query) ||
+        status.toLowerCase().includes(query);
 
-  const currentlyWorkingCount = Object.values(attByEmpToday).flat().filter((r) => (r.checkIn || r.CheckIn) && !(r.checkOut || r.CheckOut)).length;
-  const checkedOutCount = Object.values(attByEmpToday).flat().filter((r) => (r.checkIn || r.CheckIn) && (r.checkOut || r.CheckOut)).length;
-  const presentCount = currentlyWorkingCount + checkedOutCount;
-  const absentCount = Math.max(0, activeEmployeesCount - presentCount);
+      const matchesDepartment = selectedDepartment === 'ALL' || department === selectedDepartment.toLowerCase();
+      const matchesStatus = selectedStatus === 'ALL' || status === selectedStatus;
+      const matchesStart = !startDate || recordDate >= startDate;
+      const matchesEnd = !endDate || recordDate <= endDate;
 
-  const lateCount = Object.values(attByEmpToday).flat().filter((r) => r.LateArrival === true || (r.status && r.status.toString().toLowerCase() === 'late')).length;
+      return matchesSearch && matchesDepartment && matchesStatus && matchesStart && matchesEnd;
+    });
+  }, [normalizedList, employees, searchQuery, attendanceFilters]);
 
-  const q = (searchQuery || '').toLowerCase();
-  const filteredLogs = (attendanceRecords || []).filter((rec) => {
-    const matchesStatus = filterStatus === 'ALL' || rec.status === filterStatus;
-    const name = (rec.empName || '').toString();
-    const dept = (rec.department || '').toString();
-    const matchesSearch = name.toLowerCase().includes(q) || dept.toLowerCase().includes(q) || (rec.empId || '').toString().toLowerCase().includes(q);
-    return matchesStatus && matchesSearch;
-  });
+  const totalEmployeeCount = useMemo(() => {
+    const activeEmployees = (employees || []).filter((employee) => {
+      const status = toText(employee?.status, employee?.EmploymentStatus, employee?.employmentStatus).toLowerCase();
+      return status === 'active';
+    });
+    if (activeEmployees.length > 0) return activeEmployees.length;
+    if (attendancePagination && Number.isFinite(attendancePagination.total)) return attendancePagination.total;
+    const uniqueIds = new Set();
+    normalizedList.forEach((record) => {
+      const id = getEmployeeId(record);
+      if (id) uniqueIds.add(id);
+    });
+    return uniqueIds.size || normalizedList.length || 0;
+  }, [employees, attendancePagination, normalizedList]);
 
-  const anomalyCount = (attendanceRecords || []).filter((r) => {
-    if (!r || !r.isAnomaly) return false;
-    if (userRole !== 'HR_ADMIN' && userRole !== 'MANAGER') {
-      const rid = r?.empId || r?.EmpID || r?.EmpId || r?.employeeId || null;
-      return rid && String(rid) === String(selectedEmployeeId);
-    }
-    return true;
-  }).length;
+  const presentCount = useMemo(
+    () => filteredRecords.filter((record) => ['Present', 'Working'].includes(getAttendanceStatus(record))).length,
+    [filteredRecords]
+  );
+  const lateCount = useMemo(
+    () => filteredRecords.filter((record) => getAttendanceStatus(record) === 'Late').length,
+    [filteredRecords]
+  );
+  const absentCount = Math.max(0, totalEmployeeCount - presentCount);
+  const workingCount = filteredRecords.filter((record) => getAttendanceStatus(record) === 'Working').length;
+  const attendanceRate = totalEmployeeCount > 0 ? (presentCount / totalEmployeeCount) * 100 : 0;
+  const attendanceRateText = `${Math.min(100, Math.max(0, attendanceRate)).toFixed(0)}%`;
 
-  const selectedEmployeeRecord = (attendanceRecords || []).find((record) => {
-    const normalizedEmpId = record?.empId || record?.EmpID || record?.EmpId || record?.employeeId;
-    return normalizedEmpId === selectedEmployeeId && (record?.date || record?.Date) === todayISO;
-  }) || null;
+  const checkInCompletionRate = totalEmployeeCount > 0 ? ((presentCount + lateCount) / totalEmployeeCount) * 100 : 0;
+  const reviewQueueCount = Math.max(0, absentCount + lateCount); 
 
-  const employeeStatus = !selectedEmployeeRecord
-    ? 'Not Checked In'
-    : ((selectedEmployeeRecord.checkIn || selectedEmployeeRecord.CheckIn) && !(selectedEmployeeRecord.checkOut || selectedEmployeeRecord.CheckOut))
-      ? 'Currently Working'
-      : 'Day Completed';
+  const chartData = [
+    { label: 'Present', value: presentCount, color: '#10b981' },
+    { label: 'Working', value: workingCount, color: '#38bdf8' },
+    { label: 'Late', value: lateCount, color: '#f59e0b' },
+    { label: 'Absent', value: absentCount, color: '#ef4444' },
+  ].filter((item) => item.value > 0 || item.label === 'Absent');
 
-  const employeeDisplayName = (() => {
-    const current = (employees || []).find((emp) => (emp.empId || emp.EmpID || emp.EmpId) === selectedEmployeeId);
-    if (!current) return 'Employee';
-    const name = `${current.firstName || ''} ${current.lastName || ''}`.trim();
-    return name || current.empId || 'Employee';
+  const totalChartValue = Math.max(1, chartData.reduce((sum, item) => sum + item.value, 0));
+  const donutGradient = (() => {
+    let current = 0;
+    const segments = chartData.map((segment) => {
+      const start = current;
+      const percent = (segment.value / totalChartValue) * 100;
+      current += percent;
+      return `${segment.color} ${start}% ${current}%`;
+    });
+    return `conic-gradient(${segments.join(', ')})`;
   })();
 
-  const checkInValue = selectedEmployeeRecord ? (selectedEmployeeRecord.checkIn || selectedEmployeeRecord.CheckIn || '—') : '—';
-  const checkOutValue = selectedEmployeeRecord ? (selectedEmployeeRecord.checkOut || selectedEmployeeRecord.CheckOut || '—') : '—';
-  const workingHoursValue = selectedEmployeeRecord ? (selectedEmployeeRecord.workingHours ?? selectedEmployeeRecord.WorkingHours ?? '0.00') : '0.00';
+  const trendData = useMemo(() => {
+    const counts = new Map();
+    normalizedList.forEach((record) => {
+      const date = toText(record?.date, record?.Date);
+      if (!date) return;
+      const status = getAttendanceStatus(record);
+      if (status === 'Present' || status === 'Working' || status === 'Late') {
+        counts.set(date, (counts.get(date) || 0) + 1);
+      }
+    });
 
-  const statusClassMap = {
-    'Not Checked In': 'bg-slate-100 text-slate-700 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700',
-    'Currently Working': 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-950/70 dark:text-emerald-300 dark:ring-emerald-800',
-    'Day Completed': 'bg-sky-100 text-sky-700 ring-1 ring-sky-200 dark:bg-sky-950/70 dark:text-sky-300 dark:ring-sky-800'
+    return Array.from(counts.entries())
+      .sort(([a], [b]) => new Date(a) - new Date(b))
+      .slice(-7)
+      .map(([date, value]) => ({
+        label: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        value,
+      }));
+  }, [normalizedList]);
+
+  const maxTrendValue = Math.max(...trendData.map((point) => point.value), 1);
+
+  const departmentData = useMemo(() => {
+    const counts = new Map();
+    normalizedList.forEach((record) => {
+      const department = getDepartment(record);
+      if (department && department !== 'Unassigned') counts.set(department, (counts.get(department) || 0) + 1);
+    });
+    return Array.from(counts.entries())
+      .map(([label, value]) => ({ label, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 5);
+  }, [normalizedList]);
+
+  const maxDeptValue = Math.max(...departmentData.map((item) => item.value), 1);
+
+  const automationSignals = useMemo(() => {
+    const anomalies = normalizedList.filter((record) => record?.isAnomaly || record?.anomalyReason || record?.AnomalyReason);
+    return anomalies.slice(0, 3).map((record) => ({
+      title: 'Attendance anomaly',
+      tag: 'AI',
+      tone: 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300',
+      message: toText(record?.anomalyReason, record?.AnomalyReason, `${getEmployeeName(record, employees)} requires review for irregular check-in or check-out behavior.`),
+    }));
+  }, [normalizedList, employees]);
+
+  const metrics = [
+    { label: 'Total Employees', value: totalEmployeeCount, delta: 'Live', accent: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300', icon: <Users className="h-4 w-4" /> },
+    { label: 'Present Today', value: presentCount, delta: 'Today', accent: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/50 dark:text-emerald-300', icon: <CheckCircle2 className="h-4 w-4" /> },
+    { label: 'Absent Today', value: absentCount, delta: 'Review', accent: 'bg-rose-50 text-rose-600 dark:bg-rose-950/50 dark:text-rose-300', icon: <AlertTriangle className="h-4 w-4" /> },
+    { label: 'Late Arrivals', value: lateCount, delta: 'Alert', accent: 'bg-amber-50 text-amber-600 dark:bg-amber-950/50 dark:text-amber-300', icon: <Clock3 className="h-4 w-4" /> },
+  ];
+
+  const today = new Date();
+  const todayKey = toDateKey(new Date(today.getFullYear(), today.getMonth(), today.getDate()));
+
+  const holidayEntries = useMemo(() => {
+    const list = Array.isArray(holidays) ? holidays : [];
+    return [...list]
+      .map((holiday) => {
+        const name = toText(holiday?.name, holiday?.Name, 'Holiday');
+        const date = toText(holiday?.date, holiday?.Date, holiday?.day, holiday?.holidayDate);
+        const normalizedDate = parseLocalDateKey(date);
+        const type = toText(holiday?.type, holiday?.Type, holiday?.category, 'public');
+        return {
+          ...holiday,
+          id: toText(holiday?.id, holiday?._id, `${date || 'holiday'}-${name}`),
+          name,
+          date: normalizedDate || date,
+          type: type.toLowerCase(),
+          isOptional: Boolean(holiday?.isOptional ?? holiday?.is_optional ?? (type.toLowerCase() === 'optional')),
+          isWorkingDayOverride: Boolean(holiday?.isWorkingDayOverride ?? holiday?.is_working_day_override ?? false),
+        };
+      })
+      .filter((holiday) => holiday.date)
+      .sort((a, b) => {
+        const first = normalizeHolidayDate(a.date)?.getTime() ?? 0;
+        const second = normalizeHolidayDate(b.date)?.getTime() ?? 0;
+        return first - second;
+      });
+  }, [holidays, today, todayKey]);
+
+  const [calendarMonth, setCalendarMonth] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(new Date(today.getFullYear(), today.getMonth(), today.getDate()));
+
+  const holidaysForSelectedMonth = useMemo(() => {
+    const year = calendarMonth.getFullYear();
+    const monthIndex = calendarMonth.getMonth();
+    return holidayEntries.filter((holiday) => {
+      const parsed = normalizeHolidayDate(holiday.date);
+      return parsed && parsed.getFullYear() === year && parsed.getMonth() === monthIndex;
+    });
+  }, [calendarMonth, holidayEntries]);
+
+  const holidayToday = useMemo(() => {
+    return holidayEntries.find((holiday) => parseLocalDateKey(holiday.date) === todayKey) || null;
+  }, [holidayEntries, todayKey]);
+
+  const calendarHolidayMarkers = useMemo(() => {
+    const map = new Map();
+    holidayEntries.forEach((holiday) => {
+      const date = parseLocalDateKey(holiday.date);
+      if (date) map.set(date, holiday);
+    });
+    return map;
+  }, [holidayEntries]);
+
+  const holidayMap = calendarHolidayMarkers;
+
+  const selectedCalendarKey = useMemo(() => {
+    const year = selectedCalendarDate.getFullYear();
+    const month = String(selectedCalendarDate.getMonth() + 1).padStart(2, '0');
+    const day = String(selectedCalendarDate.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }, [selectedCalendarDate]);
+
+  const selectedDayStats = useMemo(() => {
+    const records = normalizedList.filter((record) => {
+      const date = toText(record?.date, record?.Date);
+      return date === selectedCalendarKey;
+    });
+    const present = records.filter((record) => ['Present', 'Working'].includes(getAttendanceStatus(record))).length;
+    const late = records.filter((record) => getAttendanceStatus(record) === 'Late').length;
+    const absent = records.filter((record) => getAttendanceStatus(record) === 'Absent').length;
+    const holiday = holidayMap.get(selectedCalendarKey) || null;
+    const isWeekend = [0, 6].includes(selectedCalendarDate.getDay());
+    return {
+      records,
+      present,
+      late,
+      absent,
+      holiday,
+      isWeekend,
+    };
+  }, [normalizedList, selectedCalendarKey, holidayMap, selectedCalendarDate]);
+
+  const calendarDays = useMemo(() => {
+    const monthStart = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1);
+    const startOffset = (monthStart.getDay() + 6) % 7;
+    const startDate = new Date(monthStart);
+    startDate.setDate(monthStart.getDate() - startOffset);
+
+    const cells = [];
+    for (let index = 0; index < 42; index += 1) {
+      const date = new Date(startDate);
+      date.setDate(startDate.getDate() + index);
+      const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      const isCurrentMonth = date.getMonth() === calendarMonth.getMonth();
+      const isToday = iso === todayKey;
+      const isSelected = iso === selectedCalendarKey;
+      const holiday = holidayMap.get(iso) || null;
+      const weekend = [0, 6].includes(date.getDay());
+      const hasAttendance = normalizedList.some((record) => toText(record?.date, record?.Date) === iso);
+      cells.push({ date, iso, isCurrentMonth, isToday, isSelected, holiday, weekend, hasAttendance });
+    }
+    return cells;
+  }, [calendarMonth, holidayMap, normalizedList, selectedCalendarKey, todayKey]);
+
+  const upcomingHolidays = useMemo(() => {
+    return [...holidayEntries]
+      .filter((holiday) => {
+        const holidayKey = normalizeHolidayDate(holiday.date) ? toDateKey(normalizeHolidayDate(holiday.date)) : null;
+        return Boolean(holidayKey && holidayKey > todayKey);
+      })
+      .sort((a, b) => {
+        const aKey = normalizeHolidayDate(a.date) ? toDateKey(normalizeHolidayDate(a.date)) : '9999-12-31';
+        const bKey = normalizeHolidayDate(b.date) ? toDateKey(normalizeHolidayDate(b.date)) : '9999-12-31';
+        return aKey.localeCompare(bKey);
+      })
+      .slice(0, 5);
+  }, [holidayEntries, todayKey]);
+
+  const insights = useMemo(() => {
+    const items = [];
+    if (trendData.length > 1) {
+      const peak = trendData.reduce((best, entry) => (entry.value > best.value ? entry : best), trendData[0]);
+      items.push(`Attendance was strongest on ${peak.label} with ${peak.value} tracked check-ins.`);
+    }
+    if (lateCount > 0) {
+      items.push(`Late arrival alerts are active for ${lateCount} attendance record${lateCount === 1 ? '' : 's'} in the loaded data.`);
+    }
+    if (holidayToday) {
+      items.push(`Today is ${holidayToday.name} (${holidayToday.type || 'holiday'}).`);
+    }
+    if (upcomingHolidays.length > 0) {
+      const nextHoliday = upcomingHolidays[0];
+      items.push(`The next company holiday is ${nextHoliday?.name || 'Holiday'} on ${formatDate(nextHoliday?.date || nextHoliday?.Date)}.`);
+    }
+    if (items.length === 0) {
+      items.push('No additional attendance insights are available from the current loaded dataset.');
+    }
+    return items;
+  }, [trendData, lateCount, upcomingHolidays, holidayToday]);
+
+  const hasFilterHandler = Boolean(onAttendanceFiltersChange || onResetAttendanceFilters);
+
+  const handleViewTodaysAttendance = () => {
+    const today = new Date();
+    const normalizedToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    setCalendarMonth(new Date(normalizedToday.getFullYear(), normalizedToday.getMonth(), 1));
+    setSelectedCalendarDate(normalizedToday);
+    const target = document.getElementById('attendance-calendar-panel');
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  const entrySubtitle =
-    employeeStatus === 'Not Checked In'
-      ? 'Start your workday'
-      : employeeStatus === 'Currently Working'
-        ? 'End your workday'
-        : "Today's attendance is complete";
-
-  const timelineItems = [
-    {
-      label: 'Check In',
-      value: checkInValue,
-      helper: checkInValue === '—' ? 'Not started yet' : 'Workday started'
-    },
-    {
-      label: 'Check Out',
-      value: checkOutValue,
-      helper: checkOutValue === '—' ? 'Not completed yet' : 'Workday completed'
-    }
-  ];
+  const handleAttendanceReport = () => {
+    const target = document.getElementById('attendance-report-panel');
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   return (
     <div className="space-y-6">
-      {attendanceError && (
-        <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-          Error loading attendance: {attendanceError}
+      {attendanceError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
+          <div className="font-bold">Attendance data could not be loaded.</div>
+          <div className="mt-1">{attendanceError}</div>
+        </div>
+      ) : null}
+
+      <section className="overflow-hidden rounded-3xl bg-gradient-to-r from-indigo-900 via-blue-800 to-indigo-700 p-6 text-white shadow-xl shadow-indigo-900/20 ring-1 ring-white/10">
+        <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
+          <div className="max-w-2xl">
+            <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-indigo-100 ring-1 ring-white/10">
+              <CalendarClock className="h-3.5 w-3.5" />
+              Workforce Operations
+            </div>
+            <h2 className="mt-4 text-3xl font-black tracking-tight text-white">
+              Attendance Management
+            </h2>
+            <p className="mt-2 max-w-xl text-sm text-indigo-100/80">
+              Administrators can monitor attendance, workforce presence, and operational exceptions across the organization in real time.
+            </p>
+
+            <div className="mt-5 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={handleViewTodaysAttendance}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-indigo-700 shadow-lg shadow-indigo-950/10 transition hover:-translate-y-0.5 hover:bg-indigo-50"
+              >
+                <CalendarClock className="h-4 w-4" />
+                View Today's Attendance
+              </button>
+              <button
+                type="button"
+                onClick={handleAttendanceReport}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-white/10"
+              >
+                <TrendingUp className="h-4 w-4" />
+                Attendance Report
+              </button>
+            </div>
+          </div>
+
+          <div className="grid w-full max-w-lg grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-3 backdrop-blur-sm">
+              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-100/80">Attendance rate</div>
+              <div className="mt-2 text-2xl font-black text-white">{attendanceRateText}</div>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-3 backdrop-blur-sm">
+              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-100/80">Check-in completion</div>
+              <div className="mt-2 text-2xl font-black text-white">{Math.min(100, Math.max(0, checkInCompletionRate)).toFixed(0)}%</div>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-3 backdrop-blur-sm">
+              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-100/80">Review queue</div>
+              <div className="mt-2 text-2xl font-black text-white">{reviewQueueCount}</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {!attendanceLoading && !attendanceError && (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          {metrics.map((metric) => (
+            <div key={metric.label} className="group rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-md dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between">
+                <div className={`rounded-xl p-2 ${metric.accent}`}>{metric.icon}</div>
+                <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">{metric.delta}</span>
+              </div>
+              <div className="mt-4 text-3xl font-black tracking-tight text-slate-900 dark:text-white">{metric.value}</div>
+              <div className="mt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">{metric.label}</div>
+            </div>
+          ))}
         </div>
       )}
-      {attendanceLoading && (
-        <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
-          Loading attendance...
-        </div>
-      )}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-            {userRole === 'HR_ADMIN' ? 'Attendance & Workforce Monitoring' : userRole === 'MANAGER' ? 'Team Attendance' : 'Attendance'}
-          </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            {userRole === 'HR_ADMIN' ? "Today's workforce overview and attendance trends" : userRole === 'MANAGER' ? 'Track attendance for your team members' : 'Track your workday attendance'}
-          </p>
-        </div>
 
-        <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-100 dark:bg-emerald-950/60 dark:text-emerald-300 dark:ring-emerald-800">
-            <ShieldCheck className="h-4 w-4" />
-            Attendance Service
-          </span>
-        </div>
-      </div>
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-        {userRole === 'EMPLOYEE' ? (
-          <div className="space-y-4">
-            <div
-              className={`rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition-all duration-500 ${
-                animateCheckIn || animateCheckOut ? 'border-emerald-200 bg-emerald-50/70' : ''
-              } dark:border-slate-800 dark:bg-slate-900`}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Attendance</p>
-                  <h3 className="mt-1 text-lg font-bold text-slate-900 dark:text-white">{new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</h3>
-                </div>
-                <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-bold ${statusClassMap[employeeStatus] || 'bg-slate-100 text-slate-700'}`}>
-                  {employeeStatus}
-                </span>
+      {!attendanceLoading && !attendanceError && (
+        <div id="attendance-report-panel" className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Distribution</p>
+                <h3 className="mt-1 text-lg font-bold text-slate-900 dark:text-white">Attendance status</h3>
               </div>
-
-              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950/60">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white dark:bg-slate-700">
-                      {(employeeDisplayName || 'E').slice(0, 1).toUpperCase()}
-                    </div>
-                    <div>
-                      <div className="text-base font-semibold text-slate-900 dark:text-white">{employeeDisplayName}</div>
-                      <div className="text-xs text-slate-500 dark:text-slate-400">{selectedEmployeeId || 'Employee ID unavailable'}</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                  <div className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Check In</div>
-                    <div className="mt-1 text-sm font-bold text-slate-900 dark:text-white">{checkInValue}</div>
-                  </div>
-                  <div className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Check Out</div>
-                    <div className="mt-1 text-sm font-bold text-slate-900 dark:text-white">{checkOutValue}</div>
-                  </div>
-                  <div className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Working Hours</div>
-                    <div className="mt-1 text-sm font-bold text-slate-900 dark:text-white">{employeeStatus === 'Day Completed' ? `${workingHoursValue} hrs` : 'In progress'}</div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="text-sm text-slate-600 dark:text-slate-300">
-                  {employeeStatus === 'Not Checked In' && 'Ready to start your workday'}
-                  {employeeStatus === 'Currently Working' && `Checked in at ${checkInValue}`}
-                  {employeeStatus === 'Day Completed' && `Checked in: ${checkInValue} • Checked out: ${checkOutValue}`}
-                </div>
-
-                {employeeStatus === 'Day Completed' ? (
-                  <button
-                    disabled
-                    className="rounded-xl border border-slate-200 bg-slate-100 px-4 py-2.5 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500 cursor-not-allowed dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"
-                  >
-                    ✓ Checked Out
-                  </button>
-                ) : (
-                  <button
-                    onClick={employeeStatus === 'Currently Working' ? onCheckOut : onCheckIn}
-                    className={`rounded-xl px-4 py-2.5 text-[11px] font-bold uppercase tracking-[0.14em] transition-all ${
-                      employeeStatus === 'Currently Working'
-                        ? 'bg-rose-500 text-white shadow-sm hover:bg-rose-600'
-                        : 'bg-emerald-500 text-white shadow-sm hover:bg-emerald-600'
-                    } ${animateCheckIn || animateCheckOut ? 'scale-[1.01]' : ''}`}
-                  >
-                    {employeeStatus === 'Currently Working' ? 'Check Out' : 'Check In'}
-                  </button>
-                )}
-              </div>
-
-              <div className="mt-3 text-xs text-slate-500 dark:text-slate-400">{entrySubtitle}</div>
-
-              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
-                <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Location Verification</div>
-                <div className={`text-sm ${gpsStatus.state === 'error' ? 'text-rose-600' : gpsStatus.state === 'success' ? 'text-emerald-600' : 'text-slate-700 dark:text-slate-200'}`}>
-                  {gpsStatus.state === 'requesting' && 'Requesting location...'}
-                  {gpsStatus.state === 'verifying' && 'Verifying location...'}
-                  {gpsStatus.state === 'success' && (
-                    <>
-                      <span className="font-semibold">✓ Attendance Verified</span>
-                      {gpsStatus.distance !== null && (
-                        <span className="ml-2 text-slate-600 dark:text-slate-300">Distance from office: {Math.round(gpsStatus.distance)} m</span>
-                      )}
-                    </>
-                  )}
-                  {gpsStatus.state === 'error' && (
-                    <span className="font-semibold">⚠ {gpsStatus.message}</span>
-                  )}
-                  {gpsStatus.state === 'idle' && gpsStatus.message}
-                </div>
-                {gpsStatus.state !== 'idle' && gpsStatus.message && gpsStatus.state !== 'error' && gpsStatus.state !== 'success' && (
-                  <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{gpsStatus.message}</div>
-                )}
-                {gpsStatus.state === 'success' && gpsStatus.message && (
-                  <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{gpsStatus.message}</div>
-                )}
-              </div>
+              <div className="rounded-full bg-indigo-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300">Live</div>
             </div>
 
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-              <div className="mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Today's Timeline</div>
-              <div className="space-y-3">
-                {timelineItems.map((item) => (
-                  <div key={item.label} className="flex items-start gap-3">
-                    <div className="mt-1 flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
-                    <div className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-950/60">
-                      <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">{item.label}</div>
-                      <div className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{item.value}</div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400">{item.helper}</div>
+            <div className="flex flex-col gap-4 md:flex-row md:items-center">
+              <div className="relative mx-auto flex h-32 w-32 items-center justify-center rounded-full" style={{ background: donutGradient }}>
+                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-white text-center shadow-inner dark:bg-slate-900">
+                  <div>
+                    <div className="text-lg font-black text-slate-900 dark:text-white">{attendanceRateText}</div>
+                    <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Rate</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex-1 space-y-3">
+                {chartData.map((item) => (
+                  <div key={item.label} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-950/60">
+                    <div className="flex items-center gap-2">
+                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                      <span className="text-sm font-medium text-slate-700 dark:text-slate-200">{item.label}</span>
                     </div>
+                    <span className="text-sm font-bold text-slate-900 dark:text-white">{item.value}</span>
                   </div>
                 ))}
               </div>
             </div>
           </div>
-        ) : (
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="mb-3 flex items-center justify-between gap-3">
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex items-center justify-between">
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Attendance Overview</p>
-                <h3 className="mt-1 text-lg font-bold text-slate-900 dark:text-white">Today's Workforce</h3>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Operations</p>
+                <h3 className="mt-1 text-lg font-bold text-slate-900 dark:text-white">Automation signals</h3>
               </div>
-              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-200">Server-verified attendance</span>
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
             </div>
 
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-center dark:border-slate-800 dark:bg-slate-950/60">
-                <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Total</div>
-                <div className="mt-1 text-xl font-black text-slate-900 dark:text-white">{activeEmployeesCount}</div>
-              </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-center dark:border-slate-800 dark:bg-slate-950/60">
-                <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Working</div>
-                <div className="mt-1 text-xl font-black text-emerald-600">{currentlyWorkingCount}</div>
-              </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-center dark:border-slate-800 dark:bg-slate-950/60">
-                <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Checked Out</div>
-                <div className="mt-1 text-xl font-black text-sky-600">{checkedOutCount}</div>
-              </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-center dark:border-slate-800 dark:bg-slate-950/60">
-                <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Absent</div>
-                <div className="mt-1 text-xl font-black text-rose-600">{absentCount}</div>
-              </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-center dark:border-slate-800 dark:bg-slate-950/60">
-                <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500">Late</div>
-                <div className="mt-1 text-xl font-black text-amber-600">{lateCount}</div>
-              </div>
-            </div>
-
-            <div className="mt-4">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <h4 className="text-sm font-bold text-slate-900 dark:text-white">Today</h4>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    placeholder="Search..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] dark:border-slate-700 dark:bg-slate-950/60 dark:text-white"
-                  />
-                  <select
-                    value={filterStatus}
-                    onChange={(e) => setFilterStatus(e.target.value)}
-                    className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] dark:border-slate-700 dark:bg-slate-950/60 dark:text-white"
-                  >
-                    <option value="ALL">All</option>
-                    <option value="WORKING">Working</option>
-                    <option value="CHECKED_OUT">Checked Out</option>
-                    <option value="ABSENT">Absent</option>
-                    <option value="LATE">Late</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
-                <table className="min-w-full text-left text-xs">
-                  <thead className="bg-slate-50 text-slate-600 dark:bg-slate-950/70 dark:text-slate-300">
-                    <tr>
-                      <th className="px-3 py-2 font-semibold">Employee</th>
-                      <th className="px-3 py-2 font-semibold">Department</th>
-                      <th className="px-3 py-2 font-semibold">Check In</th>
-                      <th className="px-3 py-2 font-semibold">Check Out</th>
-                      <th className="px-3 py-2 font-semibold">Hours</th>
-                      <th className="px-3 py-2 font-semibold">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(employees || []).filter((emp) => {
-                      const s = (emp.status || emp.EmploymentStatus || '').toString().toLowerCase();
-                      if (s !== 'active') return false;
-                      const ql = (searchQuery || '').toLowerCase();
-                      if (!ql) return true;
-                      const haystack = `${emp.empId || ''} ${emp.firstName || ''} ${emp.lastName || ''} ${emp.department || ''}`.toLowerCase();
-                      return haystack.includes(ql);
-                    }).slice(0, 100).map((emp) => {
-                      const rec = (attByEmpToday[emp.empId] || [])[0] || null;
-                      const hasCheckIn = !!(rec && (rec.checkIn || rec.CheckIn));
-                      const hasCheckOut = !!(rec && (rec.checkOut || rec.CheckOut));
-                      const rowStatus = rec && hasCheckIn && rec.LateArrival === true ? 'LATE' : rec && hasCheckIn && !hasCheckOut ? 'WORKING' : rec && hasCheckIn && hasCheckOut ? 'CHECKED OUT' : 'ABSENT';
-                      if (filterStatus !== 'ALL' && rowStatus !== filterStatus) return null;
-
-                      return (
-                        <tr key={emp.empId} className="border-t border-slate-200 dark:border-slate-800">
-                          <td className="px-3 py-2">
-                            <div className="font-semibold text-slate-900 dark:text-white">{emp.firstName || ''} {emp.lastName || ''}</div>
-                            <div className="text-[10px] text-slate-500">{emp.empId}</div>
-                          </td>
-                          <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{emp.department || emp.Department || '—'}</td>
-                          <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{rec ? (rec.checkIn || rec.CheckIn || '—') : '—'}</td>
-                          <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{rec ? (rec.checkOut || rec.CheckOut || '—') : '—'}</td>
-                          <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{rec ? ((rec.workingHours ?? rec.WorkingHours) ?? '—') : '—'}</td>
-                          <td className="px-3 py-2">
-                            <span className={`inline-flex rounded-full px-2 py-1 text-[10px] font-bold ${
-                              rowStatus === 'WORKING' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' :
-                              rowStatus === 'CHECKED OUT' ? 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300' :
-                              rowStatus === 'LATE' ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300' :
-                              'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
-                            }`}>
-                              {rowStatus}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="space-y-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4 text-amber-500" />
-                <h3 className="text-sm font-bold text-slate-900 dark:text-white">AI Anomalies</h3>
-              </div>
-              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">{anomalyCount}</span>
-            </div>
-
-            <div className="mt-3 space-y-2">
-            {(attendanceRecords || []).filter((r) => {
-              if (!r || !r.isAnomaly) return false;
-              if (userRole !== 'HR_ADMIN') {
-                const rid = r?.empId || r?.EmpID || r?.EmpId || r?.employeeId || null;
-                return rid && String(rid) === String(selectedEmployeeId);
-              }
-              return true;
-            }).slice(0, 3).map((rec, idx) => (
-              <div key={rec?.id || `${rec?.empId || 'unknown'}-${idx}`} className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold">{rec.empName || '?'}</span>
-                  <span className="text-[10px] uppercase tracking-[0.12em]">{rec.status || '?'}</span>
-                </div>
-                <div className="mt-1 text-[10px] opacity-80">{rec.anomalyReason || 'Attendance anomaly detected'}</div>
-              </div>
-            ))}
-            {anomalyCount === 0 && (
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">No attendance anomalies detected.</div>
-            )}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h4 className="text-sm font-bold text-slate-900 dark:text-white">{new Date().toLocaleDateString('en-US', { month: 'long' })} Holidays</h4>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">{holidaysLoading ? 'Loading...' : holidaysError ? 'Unable to load holidays' : `${holidays.length || 0} public holiday${(holidays.length || 0) === 1 ? '' : 's'}`}</p>
-              </div>
-            </div>
-
-            <div className="mt-3 space-y-2">
-              {(!holidays || holidays.length === 0) ? (
-                <div className="text-[11px] text-slate-500 dark:text-slate-400">No public holidays this month.</div>
-              ) : (
-                holidays.slice(0, 2).map((h, idx) => {
-                  const dateObj = new Date(h.date);
-                  const dayLabel = dateObj.toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
-                  return (
-                    <div key={idx} className="rounded-lg border border-slate-200 bg-slate-50 p-2 dark:border-slate-800 dark:bg-slate-950/60">
-                      <div className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{dayLabel}</div>
-                      <div className="mt-1 font-semibold text-slate-900 dark:text-white">{h.name}</div>
+            <div className="space-y-3">
+              {automationSignals.length > 0 ? (
+                automationSignals.map((signal, idx) => (
+                    <div key={signal.id || `${signal.title}-${signal.message}-${idx}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950/60">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-sm font-semibold text-slate-900 dark:text-white">{signal.title}</div>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.1em] ${signal.tone}`}>{signal.tag}</span>
                     </div>
-                  );
-                })
+                    <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">{signal.message}</div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-950/60 dark:text-slate-400">
+                  No active automation signals were returned by the live attendance data.
+                </div>
               )}
             </div>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Attendance History Logs Table */}
-      <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm transition-all duration-300 hover:border-indigo-200 dark:border-slate-800/80 dark:bg-slate-900 dark:hover:border-indigo-800">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-slate-100 pb-4 dark:border-slate-800">
-          <div>
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Daily Attendance Log</h3>
-            <p className="text-xs text-slate-500">Real-time attendance events and location coordinates</p>
+      {!attendanceLoading && !attendanceError && (
+        <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Trend</p>
+                <h3 className="mt-1 text-lg font-bold text-slate-900 dark:text-white">Recent attendance</h3>
+              </div>
+              <TrendingUp className="h-5 w-5 text-emerald-600" />
+            </div>
+
+            {trendData.length > 0 ? (
+              <div className="flex h-40 items-end gap-2 overflow-hidden">
+                {trendData.map((point) => (
+                  <div key={point.label} className="flex flex-1 flex-col items-center justify-end gap-2">
+                    <div className="w-full rounded-t-2xl bg-gradient-to-t from-indigo-600 to-indigo-300" style={{ height: `${Math.max(18, (point.value / maxTrendValue) * 100)}%` }} />
+                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">{point.label}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex h-40 items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-950/60 dark:text-slate-400">
+                No historical attendance trend is available in the current data subset.
+              </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Department mix</p>
+                <h3 className="mt-1 text-lg font-bold text-slate-900 dark:text-white">Department attendance</h3>
+              </div>
+              <Users className="h-5 w-5 text-sky-600" />
+            </div>
+
+            <div className="space-y-3">
+              {departmentData.length > 0 ? (
+                departmentData.map((item) => (
+                  <div key={item.label}>
+                    <div className="mb-1 flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
+                      <span>{item.label}</span>
+                      <span className="font-semibold">{item.value}</span>
+                    </div>
+                    <div className="h-2.5 rounded-full bg-slate-100 dark:bg-slate-800">
+                      <div className="h-2.5 rounded-full bg-gradient-to-r from-indigo-500 to-violet-400" style={{ width: `${Math.max(8, (item.value / maxDeptValue) * 100)}%` }} />
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-950/60 dark:text-slate-400">
+                  Department-level attendance breakdown is not available in the current dataset.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!attendanceLoading && !attendanceError && (
+        <div id="attendance-calendar-panel" className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Calendar</p>
+                <h3 className="mt-1 text-lg font-bold text-slate-900 dark:text-white">Holiday & working-day view</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1))}
+                  className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-slate-600 transition hover:border-indigo-200 hover:text-indigo-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  aria-label="Previous month"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+                    setCalendarMonth(new Date(next.getFullYear(), next.getMonth(), 1));
+                    setSelectedCalendarDate(next);
+                  }}
+                  className="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-indigo-200 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                >
+                  Today
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1))}
+                  className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-slate-600 transition hover:border-indigo-200 hover:text-indigo-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  aria-label="Next month"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="mb-4 flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-950/60">
+              <div className="text-sm font-bold text-slate-900 dark:text-white">
+                {new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(calendarMonth)}
+              </div>
+              <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
+                {holidaysForSelectedMonth.length} holiday{holidaysForSelectedMonth.length === 1 ? '' : 's'}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-7 gap-2 text-center text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
+              {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => (
+                <div key={day} className="py-2">{day}</div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-7 gap-2">
+              {calendarDays.map(({ date, iso, isCurrentMonth, isToday, isSelected, holiday, weekend, hasAttendance }) => (
+                <button
+                  type="button"
+                  key={iso}
+                  onClick={() => setSelectedCalendarDate(date)}
+                  className={[
+                    'relative min-h-[88px] rounded-2xl border p-2 text-left transition-all duration-200',
+                    isCurrentMonth ? 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900' : 'border-slate-100 bg-slate-50 text-slate-400 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-500',
+                    isSelected ? 'border-indigo-300 bg-indigo-50 shadow-sm dark:border-indigo-700 dark:bg-indigo-950/40' : 'hover:border-indigo-200 hover:bg-indigo-50/60 dark:hover:border-indigo-800 dark:hover:bg-slate-800/80',
+                    isToday ? 'ring-2 ring-indigo-200 dark:ring-indigo-800' : '',
+                  ].join(' ')}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={['text-sm font-bold', isSelected ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-200'].join(' ')}>
+                      {date.getDate()}
+                    </span>
+                    {holiday && (
+                      <span className="h-2.5 w-2.5 rounded-full bg-rose-500" title={holiday.name || 'Holiday'} />
+                    )}
+                  </div>
+                  <div className="mt-2 space-y-1">
+                    {holiday ? (
+                      <div className="rounded-full bg-rose-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
+                        {holiday.name || 'Holiday'}
+                      </div>
+                    ) : null}
+                    {weekend && !holiday ? (
+                      <div className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                        Weekend
+                      </div>
+                    ) : null}
+                    {hasAttendance && !holiday ? (
+                      <div className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                        Active
+                      </div>
+                    ) : null}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Selected date</p>
+                  <h3 className="mt-1 text-lg font-bold text-slate-900 dark:text-white">{formatDate(selectedCalendarKey)}</h3>
+                </div>
+                <CalendarDays className="h-5 w-5 text-indigo-600" />
+              </div>
+
+              <div className="mt-4 space-y-2">
+                {selectedDayStats.holiday ? (
+                  <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 dark:border-rose-900/70 dark:bg-rose-950/20">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-rose-700 dark:text-rose-300">Holiday</div>
+                    <div className="mt-1 text-sm font-bold text-rose-800 dark:text-rose-200">{selectedDayStats.holiday.name}</div>
+                    <div className="text-xs text-rose-700/80 dark:text-rose-200/80">{selectedDayStats.holiday.type || 'Company holiday'}</div>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950/60">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Working day</div>
+                    <div className="mt-1 text-sm font-bold text-slate-800 dark:text-slate-200">{selectedDayStats.isWeekend ? 'Weekend' : 'Regular working day'}</div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center dark:border-slate-800 dark:bg-slate-950/60">
+                    <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Present</div>
+                    <div className="mt-1 text-lg font-black text-slate-900 dark:text-white">{selectedDayStats.present}</div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center dark:border-slate-800 dark:bg-slate-950/60">
+                    <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Late</div>
+                    <div className="mt-1 text-lg font-black text-amber-600 dark:text-amber-300">{selectedDayStats.late}</div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center dark:border-slate-800 dark:bg-slate-950/60">
+                    <div className="text-[10px] uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Absent</div>
+                    <div className="mt-1 text-lg font-black text-rose-600 dark:text-rose-300">{selectedDayStats.absent}</div>
+                  </div>
+                </div>
+
+                {selectedDayStats.records.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-3 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-950/60 dark:text-slate-400">
+                    No attendance activity is available for this date.
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-300">
+                    <span className="font-semibold text-slate-900 dark:text-white">{selectedDayStats.records.length}</span> attendance record{selectedDayStats.records.length === 1 ? '' : 's'} matched the selected date.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Insights</p>
+                  <h3 className="mt-1 text-lg font-bold text-slate-900 dark:text-white">Operational signals</h3>
+                </div>
+                <Sparkles className="h-5 w-5 text-violet-500" />
+              </div>
+
+              <div className="mt-4 space-y-2">
+                {insights.map((insight) => (
+                  <div key={insight} className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-300">
+                    {insight}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!attendanceLoading && !attendanceError && (() => {
+        const visibleHolidays = upcomingHolidays;
+        return (
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Company calendar</p>
+                <h3 className="mt-1 text-xl font-black text-slate-900 dark:text-white">Upcoming holidays</h3>
+              </div>
+              <div className="rounded-full bg-rose-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
+                {visibleHolidays.length} scheduled
+              </div>
+            </div>
+
+            {(visibleHolidays.length === 0) ? (
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-950/60 dark:text-slate-400">
+                No company holiday records are currently available from the live holiday data source.
+              </div>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {visibleHolidays.map((holiday, index) => {
+                  const dateLabel = formatDate(holiday?.date || holiday?.Date);
+                  return (
+                    <div key={`${holiday?.date || holiday?.Date || 'holiday'}-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950/60">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-rose-700 dark:text-rose-300">{holiday?.type || 'Holiday'}</div>
+                      <div className="mt-2 text-base font-black text-slate-900 dark:text-white">{holiday?.name || 'Company holiday'}</div>
+                      <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">{dateLabel}</div>
+                      {holiday?.description && (
+                        <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">{holiday.description}</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Directory</p>
+            <h3 className="mt-1 text-xl font-black text-slate-900 dark:text-white">Attendance records</h3>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <input
-                type="text"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Filter employee name..."
-                className="rounded-lg border border-slate-200 bg-slate-50 py-1.5 pl-8 pr-3 text-xs dark:border-slate-800 dark:bg-slate-800 dark:text-white"
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search employee or ID"
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-3 text-sm text-slate-900 outline-none transition focus:border-indigo-500 focus:bg-white dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 sm:w-56"
               />
             </div>
 
-            <select
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-300"
-            >
-              <option value="ALL">All Statuses</option>
-              <option value="Present">Present</option>
-              <option value="Late">Late</option>
-              <option value="Absent">Absent</option>
-            </select>
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800">
+              <Filter className="h-4 w-4 text-slate-400" />
+              <select
+                value={attendanceFilters?.status || 'ALL'}
+                onChange={(event) => hasFilterHandler && onAttendanceFiltersChange({ status: event.target.value })}
+                className="bg-transparent text-sm text-slate-700 outline-none dark:text-slate-200"
+              >
+                <option value="ALL">All statuses</option>
+                <option value="Present">Present</option>
+                <option value="Working">Working</option>
+                <option value="Late">Late</option>
+                <option value="Absent">Absent</option>
+              </select>
+            </div>
           </div>
         </div>
 
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 text-slate-400 uppercase font-semibold text-[10px] dark:border-slate-800">
-                <th className="py-3 px-2">Employee</th>
-                <th className="py-3 px-2">Department</th>
-                <th className="py-3 px-2">Check-in</th>
-                <th className="py-3 px-2">Check-out</th>
-                <th className="py-3 px-2">Hours</th>
-                <th className="py-3 px-2">Details</th>
-                <th className="py-3 px-2">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {filteredLogs.map((log, idx) => {
-                const rowKey = log?.id || `${log?.empId || 'unknown'}-${idx}`;
-                const avatarSrc = log?.avatar && typeof log.avatar === 'string' && log.avatar.trim() !== '' ? log.avatar : null;
-                return (
-                <tr key={rowKey} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                  <td className="py-3 px-2 font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                    {avatarSrc ? (
-                      <img src={avatarSrc} alt={log?.empName || ''} className="h-7 w-7 rounded-full object-cover" />
-                    ) : (
-                      <div className="h-7 w-7 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-700">{log?.empName?.[0] || (log?.empId ? String(log.empId).slice(-2) : '—')}</div>
-                    )}
-                    {log.empName || '—' }
-                  </td>
-                  <td className="py-3 px-2 text-slate-600 dark:text-slate-300">{log.department}</td>
-                  <td className="py-3 px-2 font-mono text-slate-800 dark:text-slate-200">{log.checkIn}</td>
-                  <td className="py-3 px-2 font-mono text-slate-800 dark:text-slate-200">{log.checkOut}</td>
-                  <td className="py-3 px-2 font-semibold text-slate-800 dark:text-slate-200">{log.workingHours} hrs</td>
-                  <td className="py-3 px-2 text-slate-500 font-medium">{log.status === 'Late' ? 'Late arrival' : log.status === 'Present' ? 'Attendance recorded' : log.status === 'Absent' ? 'No attendance logged' : 'Server-verified attendance'}</td>
-                  <td className="py-3 px-2">
-                    <span
-                      className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
-                        log.status === 'Present'
-                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                          : log.status === 'Late'
-                          ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                          : 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
-                      }`}
-                    >
-                      {log.status}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-            </tbody>
-          </table>
+        <div className="mb-4 grid gap-3 md:grid-cols-3 xl:grid-cols-4">
+          <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+            Department
+            <select
+              value={attendanceFilters?.department || 'ALL'}
+              onChange={(event) => hasFilterHandler && onAttendanceFiltersChange({ department: event.target.value })}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-indigo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            >
+              <option value="ALL">All departments</option>
+              {departmentOptions.map((department) => (
+                <option key={department} value={department}>{department}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+            Start date
+            <input
+              type="date"
+              value={attendanceFilters?.startDate || ''}
+              onChange={(event) => hasFilterHandler && onAttendanceFiltersChange({ startDate: event.target.value })}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-indigo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">
+            End date
+            <input
+              type="date"
+              value={attendanceFilters?.endDate || ''}
+              onChange={(event) => hasFilterHandler && onAttendanceFiltersChange({ endDate: event.target.value })}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-indigo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            />
+          </label>
+
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={() => onResetAttendanceFilters && onResetAttendanceFilters()}
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-indigo-200 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            >
+              Clear filters
+            </button>
+          </div>
         </div>
+
+        {attendanceLoading ? (
+          <div className="space-y-3">
+            {Array.from({ length: 5 }).map((_, index) => (
+              <div key={index} className="h-16 animate-pulse rounded-2xl bg-slate-100 dark:bg-slate-800" />
+            ))}
+          </div>
+        ) : filteredRecords.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-10 text-center dark:border-slate-700 dark:bg-slate-950/60">
+            <div className="text-lg font-bold text-slate-800 dark:text-slate-200">No attendance records match the active filters</div>
+            <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Adjust the filters or clear them to review the current attendance workspace.</p>
+            <button
+              type="button"
+              onClick={() => onResetAttendanceFilters && onResetAttendanceFilters()}
+              className="mt-4 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-600 dark:bg-indigo-600 dark:hover:bg-indigo-500"
+            >
+              Clear filters
+            </button>
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead className="border-b border-slate-200 bg-slate-50 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:border-slate-800 dark:bg-slate-800/80 dark:text-slate-400">
+                  <tr>
+                    <th className="px-4 py-3.5">Employee</th>
+                    <th className="px-4 py-3.5">Department</th>
+                    <th className="px-4 py-3.5">Date</th>
+                    <th className="px-4 py-3.5">Check In</th>
+                    <th className="px-4 py-3.5">Check Out</th>
+                    <th className="px-4 py-3.5">Hours</th>
+                    <th className="px-4 py-3.5">Status</th>
+                    <th className="px-4 py-3.5 text-right">View</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                  {filteredRecords.map((record) => {
+                    const status = getAttendanceStatus(record);
+                    return (
+                      <tr key={`${getEmployeeId(record)}-${toText(record?.date, record?.Date)}`} className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/70">
+                        <td className="px-4 py-3.5">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-xs font-black text-white">{getInitials(record)}</div>
+                            <div>
+                              <div className="font-bold text-slate-900 dark:text-white">{getEmployeeName(record, employees)}</div>
+                              <div className="text-[11px] text-slate-500 dark:text-slate-400">{getEmployeeId(record) || '—'}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3.5 text-slate-700 dark:text-slate-200">{getDepartment(record)}</td>
+                        <td className="px-4 py-3.5 text-slate-600 dark:text-slate-300">{formatDate(toText(record?.date, record?.Date))}</td>
+                        <td className="px-4 py-3.5 text-slate-600 dark:text-slate-300">{formatTime(toText(record?.checkIn, record?.CheckIn))}</td>
+                        <td className="px-4 py-3.5 text-slate-600 dark:text-slate-300">{formatTime(toText(record?.checkOut, record?.CheckOut))}</td>
+                        <td className="px-4 py-3.5 text-slate-600 dark:text-slate-300">{formatHours(toText(record?.workingHours, record?.WorkingHours))}</td>
+                        <td className="px-4 py-3.5">
+                          <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-bold ${getStatusClasses(status)}`}>{status}</span>
+                        </td>
+                        <td className="px-4 py-3.5 text-right">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedRecord(record)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-indigo-300 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                          >
+                            View
+                            <ChevronRight className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
+
+      {selectedRecord && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4 dark:border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 text-sm font-black text-white">{getInitials(selectedRecord)}</div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-900 dark:text-white">{getEmployeeName(selectedRecord, employees)}</h3>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">{getEmployeeId(selectedRecord) || 'Employee record'}</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => setSelectedRecord(null)} className="rounded-xl border border-slate-200 p-2 text-slate-500 hover:text-slate-700 dark:border-slate-700 dark:text-slate-300">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <DetailBlock label="Attendance date" value={formatDate(toText(selectedRecord?.date, selectedRecord?.Date))} />
+              <DetailBlock label="Department" value={getDepartment(selectedRecord)} />
+              <DetailBlock label="Check-in" value={formatTime(toText(selectedRecord?.checkIn, selectedRecord?.CheckIn))} />
+              <DetailBlock label="Check-out" value={formatTime(toText(selectedRecord?.checkOut, selectedRecord?.CheckOut))} />
+              <DetailBlock label="Working hours" value={formatHours(toText(selectedRecord?.workingHours, selectedRecord?.WorkingHours))} />
+              <DetailBlock label="Status" value={getAttendanceStatus(selectedRecord)} tone={selectedRecord?.LateArrival === true || selectedRecord?.lateArrival === true ? 'text-amber-700 dark:text-amber-300' : 'text-slate-700 dark:text-slate-200'} />
+              <DetailBlock label="Late arrival" value={selectedRecord?.LateArrival === true || selectedRecord?.lateArrival === true ? 'Yes' : 'No'} />
+              <DetailBlock label="GPS verified" value={selectedRecord?.gpsVerified === true || selectedRecord?.GPSVerified === true ? 'Verified' : 'Not verified'} />
+            </div>
+
+            {(selectedRecord?.latitude || selectedRecord?.longitude || selectedRecord?.distanceFromOffice !== undefined) && (
+              <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950/60">
+                <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.15em] text-slate-500 dark:text-slate-400">
+                  <MapPin className="h-3.5 w-3.5" />
+                  Location signal
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <DetailBlock label="Latitude" value={toText(selectedRecord?.latitude, selectedRecord?.Latitude, '—')} />
+                  <DetailBlock label="Longitude" value={toText(selectedRecord?.longitude, selectedRecord?.Longitude, '—')} />
+                  <DetailBlock label="Distance" value={selectedRecord?.distanceFromOffice != null ? `${selectedRecord.distanceFromOffice} m` : '—'} />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

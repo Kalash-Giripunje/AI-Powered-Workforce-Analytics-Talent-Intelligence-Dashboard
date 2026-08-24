@@ -51,7 +51,7 @@ export const NotificationsDrawer = ({
             notifications.map((n) => (
               <div
                 key={n.id}
-                onClick={() => onMarkAsRead(n.id)}
+                onClick={() => onMarkAsRead(n)}
                 className={`cursor-pointer rounded-xl border p-3 transition ${
                   !(n.read ?? n.isRead ?? false)
                     ? 'border-indigo-200 bg-indigo-50/50 dark:border-indigo-900/40 dark:bg-indigo-950/30'

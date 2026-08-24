@@ -90,7 +90,7 @@ async def submit_shift_request(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to submit a shift request for this employee.")
 
     try:
-        return await ShiftService.submit(payload)
+        return await ShiftService.submit(payload, actor_user=auth_user)
 
     except ValueError as exc:
         raise HTTPException(
@@ -128,7 +128,8 @@ async def update_shift_status(
     try:
         updated = await ShiftService.update_status(
             shift_id,
-            update
+            update,
+            actor_user=auth_user,
         )
     except ValueError as exc:
         raise HTTPException(

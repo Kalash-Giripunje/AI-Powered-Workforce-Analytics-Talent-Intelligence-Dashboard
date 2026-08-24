@@ -149,3 +149,6 @@ auth-temporary-credentials.txt
 *.secrets
 **/user_accounts_metadata_backup_*.json
 
+# Vercel local project config
+.vercel/
+

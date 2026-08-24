@@ -37,10 +37,19 @@ async def get_payroll_records(
     """Retrieve payroll statements from the real MongoDB payroll collection with pagination."""
     auth_user = await require_authenticated_user(request)
     validated_month = _validate_month(month)
-    records = await PayrollService.get_all(month=validated_month, page=page, size=size)
+
     if auth_user.get("role") == "EMPLOYEE":
-        return [item for item in records if str(item.get("empId") or "").strip() == str(auth_user.get("empId") or "").strip()]
-    return records
+        employee_emp_id = str(auth_user.get("empId") or auth_user.get("userId") or "").strip()
+        if not employee_emp_id:
+            return []
+        return await PayrollService.get_all(
+            month=validated_month,
+            page=page,
+            size=size,
+            emp_id=employee_emp_id,
+        )
+
+    return await PayrollService.get_all(month=validated_month, page=page, size=size)
 
 @router.post("/calculate", response_model=List[PayrollBase])
 async def calculate_payroll(request: Request, month: str = Query("2023-05", description="Pay cycle month")):

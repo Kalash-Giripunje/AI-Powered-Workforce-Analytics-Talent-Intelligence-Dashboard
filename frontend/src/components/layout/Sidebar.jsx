@@ -12,7 +12,8 @@ import {
   FileText,
   ShieldAlert,
   Settings,
-  Bot
+  Bot,
+  User
 } from 'lucide-react';
 
 
@@ -22,76 +23,92 @@ export const Sidebar = ({
   setActiveTab,
   userRole
 }) => {
-  const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
-    { id: 'attendance', label: 'Attendance & Check-in', icon: Clock, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
-    { id: 'leave', label: 'Leave Applications', icon: CalendarDays, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
-    { id: 'shifts', label: 'Shift Allocation & Requests', icon: CalendarRange, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
-    { id: 'payroll', label: 'Payroll & Compensation', icon: Banknote, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
-    { id: 'employees', label: 'My Team & Workforce', icon: Users, roles: ['HR_ADMIN', 'MANAGER'] },
-    { id: 'timesheets', label: 'Timesheet & Billable Hours', icon: FileSpreadsheet, roles: ['HR_ADMIN', 'MANAGER'] },
-    { id: 'ai_planning', label: 'AI Workforce Planning', icon: BrainCircuit, roles: ['HR_ADMIN'] },
-    { id: 'reports', label: 'Reports & Analytics', icon: FileText, roles: ['HR_ADMIN'] },
-    { id: 'audit', label: 'Audit Logs & RBAC', icon: ShieldAlert, roles: ['HR_ADMIN'] },
-    { id: 'settings', label: 'System Settings', icon: Settings, roles: ['HR_ADMIN'] }
-  ];
+  const navGroups = {
+    workspace: [
+      { id: 'profile', label: 'Profile Center', icon: User, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
+      { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
+    ],
+    workforce: [
+      { id: 'employees', label: 'Employee Directory', icon: Users, roles: ['HR_ADMIN', 'MANAGER'] },
+      { id: 'attendance', label: 'Attendance', icon: Clock, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
+      { id: 'leave', label: 'Leave Management', icon: CalendarDays, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
+      { id: 'shifts', label: 'Shift Management', icon: CalendarRange, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
+    ],
+    operations: [
+      { id: 'payroll', label: 'Payroll', icon: Banknote, roles: ['HR_ADMIN', 'MANAGER', 'EMPLOYEE'] },
+      { id: 'timesheets', label: 'Timesheets', icon: FileSpreadsheet, roles: ['HR_ADMIN', 'MANAGER'] },
+      { id: 'reports', label: 'Reports & Analytics', icon: FileText, roles: ['HR_ADMIN'] },
+    ],
+    insights: [
+      { id: 'ai_planning', label: 'AI Workforce Planning', icon: BrainCircuit, roles: ['HR_ADMIN'] },
+      { id: 'audit', label: 'Audit Logs', icon: ShieldAlert, roles: ['HR_ADMIN'] },
+      { id: 'settings', label: 'System Settings', icon: Settings, roles: ['HR_ADMIN'] },
+    ],
+  };
 
-  const visibleItems = navItems.filter((item) => item.roles.includes(userRole));
+  const visibleNav = Object.entries(navGroups).reduce((acc, [groupKey, items]) => {
+    const visibleItems = items.filter((item) => item.roles.includes(userRole));
+    if (visibleItems.length > 0) acc[groupKey] = visibleItems;
+    return acc;
+  }, {});
 
   return (
-    <aside className="sticky top-16 z-20 hidden h-[calc(100vh-4rem)] w-64 flex-col border-r border-slate-200/80 bg-slate-50/90 backdrop-blur-md p-4 transition-all duration-300 lg:flex dark:border-slate-800/80 dark:bg-slate-900/90">
-      <div className="flex-1 space-y-2 overflow-y-auto pr-1">
-        <div className="mb-3 px-3">
-          <h3 className="text-[11px] font-extrabold tracking-widest text-indigo-600 dark:text-indigo-400 uppercase">
-            DASHBOARD
-          </h3>
-          <p className="text-[10px] text-slate-400 font-medium">
-            {userRole === 'HR_ADMIN' ? 'HR Workforce Hub' : userRole === 'MANAGER' ? 'Manager Team Workspace' : 'Employee Self-Service'}
-          </p>
+    <aside className="sticky top-16 z-20 hidden h-[calc(100vh-4rem)] w-72 flex-col border-r border-slate-200/80 bg-slate-50/90 p-4 backdrop-blur-xl transition-all duration-300 lg:flex dark:border-slate-800/80 dark:bg-slate-950/90">
+      <div className="mb-5 rounded-2xl border border-indigo-100/80 bg-gradient-to-br from-indigo-50 via-white to-sky-50 p-3 dark:border-indigo-900/80 dark:from-indigo-950/40 dark:via-slate-900 dark:to-slate-900">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.24em] text-indigo-600 dark:text-indigo-300">Workspace</p>
+            <h3 className="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">{userRole === 'HR_ADMIN' ? 'HR Command Center' : userRole === 'MANAGER' ? 'Manager Workspace' : 'Employee Hub'}</h3>
+          </div>
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-md shadow-indigo-600/25">
+            <Bot className="h-4 w-4" />
+          </div>
         </div>
-
-        <nav className="space-y-2">
-          {visibleItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                aria-current={isActive ? 'page' : undefined}
-                onClick={() => setActiveTab(item.id)}
-                tabIndex={0}
-                className={`group flex w-full items-center gap-3 rounded-lg px-3.5 py-3 text-sm font-semibold transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
-                  isActive
-                    ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-md shadow-indigo-600/25 transform translate-x-0.5'
-                    : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
-                }`}
-              >
-                <Icon className={`h-5 w-5 flex-shrink-0 transition-transform duration-200 ${isActive ? 'text-white' : 'text-slate-500 dark:text-slate-400 group-hover:text-indigo-600 dark:group-hover:text-indigo-400'}`} />
-                <span className="truncate">{item.label}</span>
-                {item.id === 'ai_planning' && (
-                  <span className="ml-auto rounded-full bg-purple-100 px-2 py-0.5 text-[9px] font-extrabold text-purple-700 dark:bg-purple-950/80 dark:text-purple-300">
-                    AI
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </nav>
       </div>
 
-      {/* Real-time Status Badge */}
-      <div className="mt-auto rounded-xl border border-indigo-100/80 bg-gradient-to-br from-indigo-50/90 to-blue-50/90 p-3.5 shadow-sm transition-all duration-300 hover:border-indigo-200 dark:border-indigo-900/50 dark:from-indigo-950/40 dark:to-slate-900">
-        <div className="flex items-center gap-2">
-          <div className="relative flex h-2 w-2">
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+      <div className="flex-1 space-y-5 overflow-y-auto pr-1">
+        {Object.entries(visibleNav).map(([groupKey, items]) => (
+          <div key={groupKey} className="space-y-2">
+            <div className="px-2.5 text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400 dark:text-slate-500">
+              {groupKey === 'workspace' ? 'Workspace' : groupKey === 'workforce' ? 'Workforce' : groupKey === 'operations' ? 'Operations' : 'Insights'}
+            </div>
+            <nav className="space-y-1.5">
+              {items.map((item) => {
+                const Icon = item.icon;
+                const isActive = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    aria-current={isActive ? 'page' : undefined}
+                    onClick={() => setActiveTab(item.id)}
+                    tabIndex={0}
+                    className={`group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                      isActive
+                        ? 'bg-slate-900 text-white shadow-lg shadow-slate-900/10 dark:bg-indigo-600 dark:text-white'
+                        : 'text-slate-700 hover:bg-slate-200/80 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100'
+                    }`}
+                  >
+                    <Icon className={`h-4 w-4 flex-shrink-0 ${isActive ? 'text-white' : 'text-slate-500 dark:text-slate-400 group-hover:text-indigo-600 dark:group-hover:text-indigo-400'}`} />
+                    <span className="truncate">{item.label}</span>
+                    {item.id === 'ai_planning' && (
+                      <span className="ml-auto rounded-full bg-violet-100 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.12em] text-violet-700 dark:bg-violet-950/80 dark:text-violet-300">
+                        AI
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
           </div>
-          <span className="text-[11px] font-bold text-slate-800 dark:text-slate-200">
-            Real-Time Engine Active
-          </span>
+        ))}
+      </div>
+
+      <div className="mt-auto rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-sky-50 p-3.5 shadow-sm dark:border-emerald-900/80 dark:from-emerald-950/40 dark:via-slate-900 dark:to-slate-900">
+        <div className="flex items-center gap-2">
+          <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 shadow-[0_0_18px_rgba(16,185,129,0.9)]" />
+          <span className="text-[11px] font-bold text-slate-800 dark:text-slate-200">Live operations status</span>
         </div>
-        <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-tight">
-          Attendance data synchronized & AI analytics ready
-        </p>
+        <p className="mt-2 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">Attendance, approvals, and workforce data are syncing with the real backend.</p>
       </div>
     </aside>
   );

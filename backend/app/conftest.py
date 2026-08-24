@@ -24,6 +24,9 @@ def reset_test_auth_state():
     db.auth_revoked_tokens.delete_many({})
     db.user_accounts.delete_many({})
     db.employees.delete_many({})
+    db.leaves.delete_many({})
+    db.shifts.delete_many({})
+    db.notifications.delete_many({})
 
     hr_pw = os.environ.get('HR_ADMIN_TEST_PASSWORD', 'hr-bootstrap-test-password')
     emp_pw = os.environ.get('EMPLOYEE_TEST_PASSWORD', 'EMP000001')
@@ -190,4 +193,7 @@ def reset_test_auth_state():
     db.auth_revoked_tokens.delete_many({})
     db.user_accounts.delete_many({})
     db.employees.delete_many({})
+    db.leaves.delete_many({})
+    db.shifts.delete_many({})
+    db.notifications.delete_many({})
     client.close()

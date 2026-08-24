@@ -105,7 +105,7 @@ def _shift_duration_minutes(start_minutes: int, end_minutes: int) -> int:
 
 
 async def _get_shift_window(db: Any, emp_id: str, attendance_date: str) -> Optional[Tuple[Optional[int], Optional[int], Optional[str]]]:
-    if not db or not emp_id:
+    if db is None or not emp_id:
         return None
     shift_query = {
         "$or": [
@@ -128,7 +128,7 @@ async def _get_shift_window(db: Any, emp_id: str, attendance_date: str) -> Optio
 
 
 async def _get_employee_status(db: Any, emp_id: Optional[str]) -> Optional[str]:
-    if not db or not emp_id:
+    if db is None or not emp_id:
         return None
     employee = await db.employees.find_one({"EmpID": emp_id}, {"_id": 0})
     if not employee:
@@ -164,6 +164,27 @@ def _get_leave_request_timestamp(doc: Dict[str, Any]) -> Optional[datetime]:
     except ValueError:
         pass
     return None
+
+
+async def _bulk_existing_event_keys(db: Any, event_keys: List[str]) -> set:
+    existing = set()
+    if db is None or not event_keys:
+        return existing
+
+    unique_keys = []
+    seen = set()
+    for key in event_keys:
+        if key and key not in seen:
+            unique_keys.append(key)
+            seen.add(key)
+    if not unique_keys:
+        return existing
+
+    if hasattr(db, "audit_logs"):
+        existing.update(await db.audit_logs.distinct("AutomationEventKey", {"AutomationEventKey": {"$in": unique_keys}}))
+    if hasattr(db, "notifications"):
+        existing.update(await db.notifications.distinct("AutomationEventKey", {"AutomationEventKey": {"$in": unique_keys}}))
+    return existing
 
 
 async def _write_automation_event(
@@ -447,6 +468,34 @@ async def missing_checkout_detection_job() -> Dict[str, Any]:
             "CheckOut": {"$in": [None, "", "N/A", "--:--"]},
         }).to_list(length=2000)
 
+        relevant_emp_ids = {doc.get("EmpID") or doc.get("empId") for doc in attendance_docs if doc.get("EmpID") or doc.get("empId")}
+        employee_status_map = {}
+        if relevant_emp_ids:
+            employee_docs = await db.employees.find(
+                {"EmpID": {"$in": sorted(relevant_emp_ids)}},
+                {"_id": 0, "EmpID": 1, "EmploymentStatus": 1, "status": 1},
+            ).to_list(length=None)
+            for employee_doc in employee_docs:
+                emp_id = employee_doc.get("EmpID")
+                if emp_id:
+                    employee_status_map[emp_id] = employee_doc.get("EmploymentStatus") or employee_doc.get("status")
+
+        shift_cache = {}
+        if relevant_emp_ids:
+            shift_docs = await db.shifts.find(
+                {"EmpID": {"$in": sorted(relevant_emp_ids)}},
+                {"_id": 0, "EmpID": 1, "ShiftDate": 1, "Date": 1, "requestedDate": 1, "ShiftStart": 1, "shiftStart": 1, "ShiftEnd": 1, "shiftEnd": 1, "ShiftName": 1, "shiftName": 1},
+            ).to_list(length=None)
+            for shift_doc in shift_docs:
+                shift_emp_id = shift_doc.get("EmpID")
+                if not shift_emp_id:
+                    continue
+                for date_field in ("ShiftDate", "Date", "requestedDate"):
+                    date_value = shift_doc.get(date_field)
+                    if date_value is None:
+                        continue
+                    shift_cache[(str(shift_emp_id), str(date_value))] = shift_doc
+
         for doc in attendance_docs:
             emp_id = _safe_emp_id(doc)
             attendance_date = _safe_date_value(doc)
@@ -454,17 +503,21 @@ async def missing_checkout_detection_job() -> Dict[str, Any]:
             if not emp_id or not attendance_date or not check_in:
                 continue
 
-            status_value = await _get_employee_status(db, emp_id)
+            status_value = employee_status_map.get(emp_id)
             if status_value and str(status_value).strip().lower() not in {"active", "working", "on duty"}:
                 continue
 
             expected_duration_hours = 8.0
-            shift_info = await _get_shift_window(db, emp_id, attendance_date)
-            if shift_info:
-                start_minutes, end_minutes, _ = shift_info
-                shift_delta_minutes = _shift_duration_minutes(start_minutes, end_minutes)
-                if shift_delta_minutes > 0:
-                    expected_duration_hours = max(shift_delta_minutes / 60.0, 0.5)
+            shift_doc = shift_cache.get((emp_id, attendance_date))
+            if shift_doc:
+                start_val = shift_doc.get("ShiftStart") or shift_doc.get("shiftStart")
+                end_val = shift_doc.get("ShiftEnd") or shift_doc.get("shiftEnd")
+                start_minutes = _time_to_minutes(start_val)
+                end_minutes = _time_to_minutes(end_val)
+                if start_minutes is not None and end_minutes is not None:
+                    shift_delta_minutes = _shift_duration_minutes(start_minutes, end_minutes)
+                    if shift_delta_minutes > 0:
+                        expected_duration_hours = max(shift_delta_minutes / 60.0, 0.5)
 
             check_in_dt = _combine_attendance_datetime(attendance_date, check_in)
             if check_in_dt is None:
@@ -536,9 +589,60 @@ async def late_arrival_detection_job() -> Dict[str, Any]:
         return {"job_name": "late_arrival_detection", "status": "NO_DB", "started_at": started_at, "finished_at": _utc_now_iso(), "events_detected": 0}
 
     try:
+        cutoff_date = (datetime.now(timezone.utc).date() - timedelta(days=14)).isoformat()
         attendance_docs = await db.attendance.find({
             "CheckIn": {"$exists": True, "$ne": None, "$ne": ""},
+            "$or": [
+                {"Date": {"$gte": cutoff_date}},
+                {"date": {"$gte": cutoff_date}},
+                {"ShiftDate": {"$gte": cutoff_date}},
+                {"requestedDate": {"$gte": cutoff_date}},
+            ],
         }).to_list(length=2000)
+
+        relevant_emp_ids = {doc.get("EmpID") or doc.get("empId") for doc in attendance_docs if doc.get("EmpID") or doc.get("empId")}
+        shift_cache = {}
+        if relevant_emp_ids:
+            shift_docs = await db.shifts.find(
+                {"EmpID": {"$in": sorted(relevant_emp_ids)}},
+                {"_id": 0, "EmpID": 1, "ShiftDate": 1, "Date": 1, "requestedDate": 1, "ShiftStart": 1, "shiftStart": 1, "ShiftEnd": 1, "shiftEnd": 1, "ShiftName": 1, "shiftName": 1},
+            ).to_list(length=None)
+            for shift_doc in shift_docs:
+                shift_emp_id = shift_doc.get("EmpID")
+                if not shift_emp_id:
+                    continue
+                for date_field in ("ShiftDate", "Date", "requestedDate"):
+                    date_value = shift_doc.get(date_field)
+                    if date_value is None:
+                        continue
+                    shift_cache[(str(shift_emp_id), str(date_value))] = shift_doc
+
+        candidate_event_keys = []
+        for doc in attendance_docs:
+            emp_id = _safe_emp_id(doc)
+            attendance_date = _safe_date_value(doc)
+            check_in = _safe_checkin_value(doc)
+            if not emp_id or not attendance_date or not check_in:
+                continue
+            if doc.get("LateArrival") is True or doc.get("lateArrival") is True:
+                continue
+            shift_doc = shift_cache.get((emp_id, attendance_date))
+            if not shift_doc:
+                continue
+            shift_start_val = shift_doc.get("ShiftStart") or shift_doc.get("shiftStart")
+            shift_start = _time_to_minutes(shift_start_val)
+            if shift_start is None:
+                continue
+            actual_dt = _combine_attendance_datetime(attendance_date, check_in)
+            if actual_dt is None:
+                continue
+            actual_minutes = actual_dt.hour * 60 + actual_dt.minute
+            if actual_minutes <= shift_start + 15:
+                continue
+            candidate_event_keys.append(f"{emp_id}:{attendance_date}:late_arrival")
+
+        existing_event_keys = await _bulk_existing_event_keys(db, candidate_event_keys)
+        seen_event_keys = set(existing_event_keys)
 
         for doc in attendance_docs:
             emp_id = _safe_emp_id(doc)
@@ -550,11 +654,12 @@ async def late_arrival_detection_job() -> Dict[str, Any]:
             if doc.get("LateArrival") is True or doc.get("lateArrival") is True:
                 continue
 
-            shift_window = await _get_shift_window(db, emp_id, attendance_date)
-            if not shift_window:
+            shift_doc = shift_cache.get((emp_id, attendance_date))
+            if not shift_doc:
                 continue
-
-            shift_start, _, shift_name = shift_window
+            shift_start_val = shift_doc.get("ShiftStart") or shift_doc.get("shiftStart")
+            shift_name = shift_doc.get("ShiftName") or shift_doc.get("shiftName") or "shift"
+            shift_start = _time_to_minutes(shift_start_val)
             if shift_start is None:
                 continue
 
@@ -569,6 +674,10 @@ async def late_arrival_detection_job() -> Dict[str, Any]:
 
             lateness_minutes = actual_minutes - shift_start
             event_key = f"{emp_id}:{attendance_date}:late_arrival"
+            if event_key in seen_event_keys:
+                continue
+            seen_event_keys.add(event_key)
+
             employee_message = (
                 f"Your attendance for {attendance_date} started {lateness_minutes} minutes late versus the {shift_name} shift start."
             )
@@ -631,8 +740,30 @@ async def leave_reminder_job() -> Dict[str, Any]:
 
     try:
         pending_leaves = await db.leaves.find({
-            "Status": {"$regex": "^pending$", "$options": "i"}
+            "Status": {"$in": ["Pending", "pending"]}
         }).to_list(length=2000)
+
+        candidate_event_keys = []
+        for doc in pending_leaves:
+            emp_id = _safe_emp_id(doc)
+            leave_start = doc.get("StartDate") or doc.get("startDate")
+            if not emp_id:
+                continue
+
+            request_time = _get_leave_request_timestamp(doc)
+            if request_time is None:
+                continue
+
+            age_hours = (datetime.now(timezone.utc) - request_time).total_seconds() / 3600.0
+            if age_hours < 72:
+                continue
+
+            reminder_date = leave_start or request_time.strftime("%Y-%m-%d")
+            event_key = f"{emp_id}:{request_time.isoformat()}:leave_reminder"
+            candidate_event_keys.append(event_key)
+
+        existing_event_keys = await _bulk_existing_event_keys(db, candidate_event_keys)
+        seen_event_keys = set(existing_event_keys)
 
         for doc in pending_leaves:
             emp_id = _safe_emp_id(doc)
@@ -650,6 +781,10 @@ async def leave_reminder_job() -> Dict[str, Any]:
 
             reminder_date = leave_start or request_time.strftime("%Y-%m-%d")
             event_key = f"{emp_id}:{request_time.isoformat()}:leave_reminder"
+            if event_key in seen_event_keys:
+                continue
+            seen_event_keys.add(event_key)
+
             employee_message = (
                 f"Your leave request submitted on {request_time.date().isoformat()} remains pending. Please review the current status."
             )
