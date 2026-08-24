@@ -53,7 +53,7 @@ export const Sidebar = ({
   }, {});
 
   return (
-    <aside className="sticky top-16 z-20 hidden h-[calc(100vh-4rem)] w-72 flex-col border-r border-slate-200/80 bg-slate-50/90 p-4 backdrop-blur-xl transition-all duration-300 lg:flex dark:border-slate-800/80 dark:bg-slate-950/90">
+    <aside className="sticky top-16 z-20 flex h-[calc(100vh-4rem)] w-72 flex-col border-r border-slate-200/80 bg-slate-50/90 p-4 backdrop-blur-xl transition-all duration-300 dark:border-slate-800/80 dark:bg-slate-950/90">
       <div className="mb-5 rounded-2xl border border-indigo-100/80 bg-gradient-to-br from-indigo-50 via-white to-sky-50 p-3 dark:border-indigo-900/80 dark:from-indigo-950/40 dark:via-slate-900 dark:to-slate-900">
         <div className="flex items-center justify-between">
           <div>

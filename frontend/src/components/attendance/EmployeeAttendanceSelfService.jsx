@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowRight,
@@ -206,11 +206,14 @@ export const EmployeeAttendanceSelfService = ({
   const [selectedWorkMode, setSelectedWorkMode] = useState('OFFICE');
   const [selectedHybridArrangement, setSelectedHybridArrangement] = useState('OFFICE');
   const [showExceptionModal, setShowExceptionModal] = useState(false);
+  const [blockingIssue, setBlockingIssue] = useState(null);
+  const [locationRefreshKey, setLocationRefreshKey] = useState(0);
   const [exceptionReason, setExceptionReason] = useState('Location permission issue');
   const [exceptionDescription, setExceptionDescription] = useState('');
   const [exceptionSubmitting, setExceptionSubmitting] = useState(false);
   const [attendanceContext, setAttendanceContext] = useState(null);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const previousWorkModeRef = useRef(selectedWorkMode);
   const [gpsState, setGpsState] = useState({
     loading: false,
     error: '',
@@ -220,6 +223,16 @@ export const EmployeeAttendanceSelfService = ({
     geofenceStatus: 'READY',
     distance: null,
   });
+
+  // Recent timeline records (exclude today's primary summary to avoid duplication)
+  const recentTimelineRecords = useMemo(() => {
+    const items = Array.isArray(attendanceRecords) ? attendanceRecords : [];
+    const todayKey = normalizeDateKey(new Date().toISOString().slice(0, 10));
+    return items.filter((r) => {
+      const rk = normalizeDateKey(getRecordValue(r, ['date', 'Date', 'workDate']));
+      return rk && rk !== todayKey;
+    }).slice(0, 5);
+  }, [attendanceRecords, currentTime]);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -294,6 +307,7 @@ export const EmployeeAttendanceSelfService = ({
     fetchContext();
   }, [employeeId]);
 
+
   useEffect(() => {
     const mode = normalizeWorkMode(attendanceContext?.work_mode || attendanceContext?.workMode || selectedWorkMode);
     setSelectedWorkMode(mode);
@@ -358,7 +372,7 @@ export const EmployeeAttendanceSelfService = ({
         maximumAge: 0,
       },
     );
-  }, [attendanceContext, employeeId, selectedMethod]);
+  }, [attendanceContext, employeeId, locationRefreshKey, selectedMethod]);
 
   const effectiveWorkMode = useMemo(() => {
     const baseMode = normalizeWorkMode(selectedWorkMode || attendanceContext?.work_mode || attendanceContext?.workMode || 'OFFICE');
@@ -370,7 +384,12 @@ export const EmployeeAttendanceSelfService = ({
     const mode = effectiveWorkMode;
     const geofenceRequired = mode === 'OFFICE' || (mode === 'HYBRID' && selectedHybridArrangement === 'OFFICE');
     const gpsAuditOnly = mode === 'REMOTE' || mode === 'FLEXIBLE' || (mode === 'HYBRID' && selectedHybridArrangement === 'REMOTE');
-    const requiresApproval = Boolean(attendanceContext?.requires_manager_approval || attendanceContext?.remote_approved === false || (mode === 'REMOTE' || mode === 'FLEXIBLE' || (mode === 'HYBRID' && selectedHybridArrangement === 'REMOTE')));
+    const requiresApproval = Boolean(
+      attendanceContext?.requires_manager_approval === true ||
+      attendanceContext?.requiresManagerApproval === true ||
+      attendanceContext?.remote_approved === false ||
+      attendanceContext?.remoteApproved === false
+    );
 
     return {
       mode,
@@ -395,11 +414,112 @@ export const EmployeeAttendanceSelfService = ({
 
     const mode = workModePolicy.mode;
     if (mode === 'OFFICE') return ['GPS', 'FACE', 'BIOMETRIC', 'QR', 'STANDARD', 'DIRECT'];
-    if (mode === 'REMOTE') return ['REMOTE', 'FACE', 'STANDARD', 'GPS'];
+    if (mode === 'REMOTE') return ['REMOTE', 'FACE', 'STANDARD', 'GPS', 'DIRECT'];
     if (mode === 'FIELD') return ['GPS', 'FACE', 'STANDARD', 'DIRECT'];
-    if (mode === 'FLEXIBLE') return ['GPS', 'FACE', 'STANDARD', 'REMOTE'];
+    if (mode === 'FLEXIBLE') return ['GPS', 'FACE', 'STANDARD', 'REMOTE', 'DIRECT'];
     return dynamicMethods.length ? dynamicMethods : ['GPS', 'FACE', 'STANDARD', 'DIRECT'];
-  }, [attendanceContext, workModePolicy.mode]);
+  }, [attendanceContext, effectiveWorkMode, workModePolicy.mode]);
+
+  const preferredMethodForMode = useMemo(() => {
+    const mode = effectiveWorkMode;
+    const backendPrimary = getMethodKey(attendanceContext?.primary_method || attendanceContext?.primaryMethod || 'GPS');
+    const preferredOrder = {
+      OFFICE: ['GPS', 'FACE', 'BIOMETRIC', 'QR', 'STANDARD', 'DIRECT'],
+      REMOTE: ['REMOTE', 'FACE', 'STANDARD', 'GPS', 'DIRECT'],
+      FIELD: ['GPS', 'FACE', 'STANDARD', 'DIRECT'],
+      FLEXIBLE: ['REMOTE', 'STANDARD', 'GPS', 'DIRECT', 'FACE'],
+      HYBRID: ['DIRECT', 'GPS', 'REMOTE', 'FACE', 'STANDARD'],
+    };
+
+    const candidates = [backendPrimary, ...(preferredOrder[mode] || allowedMethods || [])];
+    const firstAllowed = candidates.find((value) => value && allowedMethods.includes(value));
+    return firstAllowed || allowedMethods[0] || 'GPS';
+  }, [allowedMethods, attendanceContext, effectiveWorkMode]);
+
+  useEffect(() => {
+    if (!allowedMethods.length) return;
+    const changedMode = previousWorkModeRef.current !== effectiveWorkMode;
+    if (changedMode || !allowedMethods.includes(selectedMethod)) {
+      setSelectedMethod(preferredMethodForMode);
+      previousWorkModeRef.current = effectiveWorkMode;
+    }
+  }, [allowedMethods, effectiveWorkMode, preferredMethodForMode, selectedMethod]);
+
+  const resolveBlockingIssue = useMemo(() => {
+    if (!selectedMethod) return null;
+    if (!allowedMethods.includes(selectedMethod)) {
+      return {
+        id: 'method-unavailable',
+        title: 'Verification unavailable',
+        message: `${METHOD_META[selectedMethod]?.label || 'This verification'} method is not currently permitted for your current attendance policy.`,
+        canRetry: false,
+        canRequestException: false,
+      };
+    }
+
+    if (selectedMethod === 'REMOTE' && workModePolicy.requiresApproval && !(attendanceContext?.remote_approved ?? attendanceContext?.remoteApproved ?? false)) {
+      return {
+        id: 'remote-approval',
+        title: 'Remote approval needed',
+        message: 'Remote work approval is required before remote attendance can begin. Please request approval or use an allowed alternate verification method.',
+        canRetry: false,
+        canRequestException: true,
+      };
+    }
+
+    if (selectedMethod === 'GPS') {
+      if (gpsState.loading) {
+        return {
+          id: 'gps-loading',
+          title: 'Checking location',
+          message: 'Acquiring secure location before continuing.',
+          canRetry: true,
+          canRequestException: false,
+        };
+      }
+      if (workModePolicy.geofenceRequired && gpsState.geofenceStatus === 'OUTSIDE') {
+        return {
+          id: 'gps-outside',
+          title: 'Location outside approved zone',
+          message: 'Your location is outside the approved office zone. Move back into range or request an attendance exception.',
+          canRetry: true,
+          canRequestException: true,
+        };
+      }
+      if (gpsState.geofenceStatus === 'DENIED' || gpsState.geofenceStatus === 'UNAVAILABLE') {
+        return {
+          id: 'gps-denied',
+          title: 'GPS unavailable',
+          message: 'GPS verification is unavailable. Please enable location access, retry, or choose a different allowed verification method.',
+          canRetry: true,
+          canRequestException: true,
+        };
+      }
+      if (gpsState.latitude === null || gpsState.longitude === null) {
+        return {
+          id: 'gps-missing',
+          title: 'GPS not ready',
+          message: 'We still need your current GPS coordinates before verification can continue.',
+          canRetry: true,
+          canRequestException: true,
+        };
+      }
+    }
+
+    return null;
+  }, [allowedMethods, attendanceContext, gpsState, selectedMethod, workModePolicy]);
+
+  const openExceptionRequest = () => {
+    setShowExceptionModal(true);
+    setStatusMessage('');
+    setBlockingIssue(null);
+  };
+
+  const retryLocation = () => {
+    setStatusMessage('Checking location again...');
+    setBlockingIssue(null);
+    setLocationRefreshKey((previous) => previous + 1);
+  };
 
   const exceptionOptions = [
     'Location permission issue',
@@ -436,6 +556,7 @@ export const EmployeeAttendanceSelfService = ({
 
       await api.submitAttendanceException(payload);
       setShowExceptionModal(false);
+      setBlockingIssue(null);
       setExceptionDescription('');
       setStatusMessage('Attendance exception submitted successfully. HR will review it shortly.');
     } catch (error) {
@@ -501,42 +622,14 @@ export const EmployeeAttendanceSelfService = ({
       return;
     }
 
-    if (workModePolicy.requiresApproval && selectedMethod === 'REMOTE' && !attendanceContext?.remote_approved && !(attendanceContext?.remoteApproved ?? false)) {
-      setStatusMessage('Remote work approval is required before you can begin a remote attendance session.');
-      setShowExceptionModal(true);
+    const currentIssue = resolveBlockingIssue;
+    if (currentIssue) {
+      setBlockingIssue(currentIssue);
+      setStatusMessage(currentIssue.message);
       return;
     }
 
-    if (selectedMethod === 'GPS') {
-      if (gpsState.loading) {
-        setStatusMessage('Acquiring secure location before continuing.');
-        return;
-      }
-      if (workModePolicy.geofenceRequired && gpsState.geofenceStatus === 'OUTSIDE') {
-        setStatusMessage('Your location is outside the approved office zone. Please either move within the permitted area or request an exception.');
-        setShowExceptionModal(true);
-        return;
-      }
-      if (gpsState.geofenceStatus === 'DENIED' || gpsState.geofenceStatus === 'UNAVAILABLE') {
-        setStatusMessage('GPS verification is currently unavailable. Please enable location access or choose a different verification method.');
-        return;
-      }
-      if (gpsState.latitude === null || gpsState.longitude === null) {
-        setStatusMessage('We still need your current GPS coordinates before verification can continue.');
-        return;
-      }
-    }
-
-    if (selectedMethod === 'FACE' || selectedMethod === 'BIOMETRIC' || selectedMethod === 'QR' || selectedMethod === 'REMOTE' || selectedMethod === 'STANDARD') {
-      const configuredStatus = attendanceContext?.allowed_methods || attendanceContext?.allowedMethods || ['GPS', 'FACE', 'BIOMETRIC', 'REMOTE', 'QR', 'STANDARD'];
-      const normalized = configuredStatus.map((method) => getMethodKey(method));
-      if (!normalized.includes(selectedMethod)) {
-        setStatusMessage(`${METHOD_META[selectedMethod]?.label || 'This verification'} method is not currently permitted for your workday policy.`);
-        setShowExceptionModal(true);
-        return;
-      }
-    }
-
+    setBlockingIssue(null);
     setIsSubmitting(true);
     setStatusMessage('');
 
@@ -548,6 +641,7 @@ export const EmployeeAttendanceSelfService = ({
         ...(selectedMethod === 'GPS' && gpsState.latitude !== null && gpsState.longitude !== null ? { latitude: gpsState.latitude, longitude: gpsState.longitude } : {}),
       };
 
+      setBlockingIssue(null);
       if (currentCheckIn && !currentCheckOut) {
         const record = await onCheckOut?.(payload);
         if (record) {
@@ -564,6 +658,13 @@ export const EmployeeAttendanceSelfService = ({
       const cleanMessage = backendMessage.toLowerCase().includes('check-out time must be later than check-in time')
         ? 'Unable to complete check-out. Check-out time must be later than your check-in time.'
         : backendMessage;
+      setBlockingIssue({
+        id: 'verification-failure',
+        title: 'Verification failed',
+        message: cleanMessage,
+        canRetry: true,
+        canRequestException: true,
+      });
       setStatusMessage(cleanMessage);
     } finally {
       setIsSubmitting(false);
@@ -619,45 +720,59 @@ export const EmployeeAttendanceSelfService = ({
 
         <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
           {Object.entries(WORK_MODE_META).map(([modeKey, modeMeta]) => {
-            const selected = selectedWorkMode === modeKey || (modeKey === 'HYBRID' && selectedWorkMode === 'HYBRID');
-            const isHybridDayChoice = modeKey === 'HYBRID';
+            const selected = selectedWorkMode === modeKey;
             return (
               <button
                 key={modeKey}
                 type="button"
                 onClick={() => {
                   setSelectedWorkMode(modeKey);
+                  setStatusMessage('');
+                  setBlockingIssue(null);
                   if (modeKey === 'HYBRID') {
                     setSelectedHybridArrangement('OFFICE');
                   }
                 }}
-                className={`rounded-[22px] border p-4 text-left transition-all duration-200 ${selected ? 'scale-[1.01] border-indigo-300 bg-indigo-50 shadow-[0_20px_45px_-25px_rgba(79,70,229,0.8)] dark:border-indigo-800 dark:bg-indigo-950/40' : 'border-slate-200 bg-slate-50 hover:border-indigo-200 hover:bg-indigo-50 dark:border-slate-700 dark:bg-slate-950/60 dark:hover:border-indigo-800'}`}
+                className={`group relative overflow-hidden rounded-[22px] border p-4 text-left transition-all duration-250 ease-out hover:-translate-y-1 hover:shadow-[0_20px_40px_-25px_rgba(99,102,241,0.9)] ${selected
+                  ? 'border-indigo-300 bg-gradient-to-br from-indigo-50 to-violet-50 shadow-[0_24px_50px_-25px_rgba(79,70,229,0.8)] ring-2 ring-indigo-200/80 dark:border-indigo-700 dark:bg-gradient-to-br dark:from-indigo-950/60 dark:to-violet-950/60 dark:ring-indigo-800/80'
+                  : 'border-slate-200 bg-slate-50 hover:border-indigo-200 hover:bg-indigo-50 dark:border-slate-700 dark:bg-slate-950/60 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/40'}`}
               >
-                <div className="text-2xl">{modeMeta.icon}</div>
-                <div className="mt-3 text-base font-black text-slate-900 dark:text-white">{modeMeta.label}</div>
+                <div className={`absolute inset-x-0 top-0 h-1 rounded-t-[22px] ${selected ? 'bg-gradient-to-r from-indigo-500 via-violet-500 to-sky-500' : 'bg-transparent'}`} />
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/90 text-2xl shadow-sm ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">{modeMeta.icon}</div>
+                  {selected && <span className="rounded-full bg-indigo-600 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.18em] text-white shadow-sm">Selected</span>}
+                </div>
+                <div className="mt-4 text-base font-black text-slate-900 dark:text-white">{modeMeta.label}</div>
                 <div className="mt-2 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">{modeMeta.description}</div>
-                {selected && <div className="mt-3 inline-flex rounded-full bg-indigo-600 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.18em] text-white">Selected</div>}
               </button>
             );
           })}
         </div>
 
         {selectedWorkMode === 'HYBRID' && (
-          <div className="mt-5 rounded-[22px] border border-indigo-200 bg-indigo-50 p-4 dark:border-indigo-900 dark:bg-indigo-950/30">
+          <div className="mt-5 rounded-[22px] border border-indigo-200 bg-indigo-50 p-4 shadow-inner shadow-indigo-100 dark:border-indigo-900 dark:bg-indigo-950/30 dark:shadow-indigo-950/40">
             <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-indigo-700 dark:text-indigo-300">Hybrid workday</div>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <button
                 type="button"
-                onClick={() => setSelectedHybridArrangement('OFFICE')}
-                className={`rounded-2xl border px-4 py-3 text-left transition ${selectedHybridArrangement === 'OFFICE' ? 'border-indigo-300 bg-white shadow-sm dark:border-indigo-700 dark:bg-slate-900' : 'border-slate-200 bg-white/60 dark:border-slate-700 dark:bg-slate-900/60'}`}
+                onClick={() => {
+                  setSelectedHybridArrangement('OFFICE');
+                  setStatusMessage('');
+                  setBlockingIssue(null);
+                }}
+                className={`rounded-2xl border px-4 py-3 text-left transition-all duration-200 hover:-translate-y-0.5 ${selectedHybridArrangement === 'OFFICE' ? 'border-indigo-300 bg-white shadow-sm ring-2 ring-indigo-100 dark:border-indigo-700 dark:bg-slate-900 dark:ring-indigo-900' : 'border-slate-200 bg-white/60 hover:border-indigo-200 hover:bg-indigo-50 dark:border-slate-700 dark:bg-slate-900/60 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/40'}`}
               >
                 <div className="text-xl">🏢</div>
                 <div className="mt-2 text-sm font-black text-slate-900 dark:text-white">Working from office</div>
               </button>
               <button
                 type="button"
-                onClick={() => setSelectedHybridArrangement('REMOTE')}
-                className={`rounded-2xl border px-4 py-3 text-left transition ${selectedHybridArrangement === 'REMOTE' ? 'border-indigo-300 bg-white shadow-sm dark:border-indigo-700 dark:bg-slate-900' : 'border-slate-200 bg-white/60 dark:border-slate-700 dark:bg-slate-900/60'}`}
+                onClick={() => {
+                  setSelectedHybridArrangement('REMOTE');
+                  setStatusMessage('');
+                  setBlockingIssue(null);
+                }}
+                className={`rounded-2xl border px-4 py-3 text-left transition-all duration-200 hover:-translate-y-0.5 ${selectedHybridArrangement === 'REMOTE' ? 'border-indigo-300 bg-white shadow-sm ring-2 ring-indigo-100 dark:border-indigo-700 dark:bg-slate-900 dark:ring-indigo-900' : 'border-slate-200 bg-white/60 hover:border-indigo-200 hover:bg-indigo-50 dark:border-slate-700 dark:bg-slate-900/60 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/40'}`}
               >
                 <div className="text-xl">🏠</div>
                 <div className="mt-2 text-sm font-black text-slate-900 dark:text-white">Working remotely</div>
@@ -667,19 +782,19 @@ export const EmployeeAttendanceSelfService = ({
         )}
 
         <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/60">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
             <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Arrangement</div>
             <div className="mt-2 text-lg font-black text-slate-900 dark:text-white">{workModePolicy.arrangementLabel}</div>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/60">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
             <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">GPS policy</div>
             <div className="mt-2 text-lg font-black text-slate-900 dark:text-white">{workModePolicy.geofenceRequired ? 'Office geofence' : workModePolicy.gpsAuditOnly ? 'Audit only' : 'Policy-based'}</div>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/60">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
             <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Policy</div>
             <div className="mt-2 text-lg font-black text-slate-900 dark:text-white">{attendanceContext?.policy_name || 'Adaptive Attendance Verification'}</div>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/60">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
             <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Approval</div>
             <div className="mt-2 text-lg font-black text-slate-900 dark:text-white">{workModePolicy.requiresApproval ? 'Required' : 'Not required'}</div>
           </div>
@@ -698,9 +813,9 @@ export const EmployeeAttendanceSelfService = ({
             </div>
           </div>
 
-          <div className="mt-6 grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
+          <div className="mt-6 grid gap-4 lg:grid-cols-[0.95fr_1.05fr]">
             <div className="flex items-center justify-center rounded-[28px] border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/60">
-              <div className="relative flex h-44 w-44 items-center justify-center">
+              <div className="relative flex h-36 w-36 items-center justify-center">
                 <svg viewBox="0 0 120 120" className="absolute inset-0 h-full w-full -rotate-90">
                   <circle cx="60" cy="60" r="46" stroke="rgba(148,163,184,0.25)" strokeWidth="10" fill="none" />
                   <circle
@@ -730,49 +845,35 @@ export const EmployeeAttendanceSelfService = ({
             </div>
 
             <div className="space-y-3">
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/60">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Check-In</div>
                   <div className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">Start</div>
                 </div>
-                <div className="mt-2 text-xl font-black text-slate-900 dark:text-white">{formatTime(currentCheckIn)}</div>
+                <div className="mt-2 text-lg font-black text-slate-900 dark:text-white">{formatTime(currentCheckIn)}</div>
               </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/60">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Current</div>
                   <div className="rounded-full bg-indigo-100 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300">Live</div>
                 </div>
-                <div className="mt-2 text-xl font-black text-slate-900 dark:text-white">{attendanceStatus}</div>
+                <div className="mt-2 text-lg font-black text-slate-900 dark:text-white">{attendanceStatus}</div>
               </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/60">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Check-Out</div>
                   <div className="rounded-full bg-sky-100 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-sky-700 dark:bg-sky-950/60 dark:text-sky-300">End</div>
                 </div>
-                <div className="mt-2 text-xl font-black text-slate-900 dark:text-white">{formatTime(currentCheckOut)}</div>
+                <div className="mt-2 text-lg font-black text-slate-900 dark:text-white">{formatTime(currentCheckOut)}</div>
               </div>
             </div>
           </div>
 
-          <div className="mt-6 rounded-[26px] border border-indigo-100 bg-indigo-50 p-4 dark:border-indigo-900 dark:bg-indigo-950/30">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-indigo-600 dark:text-indigo-300" />
-                <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-indigo-700 dark:text-indigo-300">Verification</div>
-              </div>
-              <div className="text-xs font-semibold text-indigo-800 dark:text-indigo-200">{selectedMethod}</div>
-            </div>
-
-            <div className="mt-3 flex items-center justify-between gap-4 text-sm text-slate-700 dark:text-slate-200">
-              <span>{METHOD_META[selectedMethod]?.short || 'Quick attendance workflow'}</span>
-              <span className="rounded-full bg-white/70 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-700 dark:bg-slate-900 dark:text-slate-200">{selectedMethod === 'GPS' ? (gpsState.geofenceStatus === 'OUTSIDE' ? 'ATTENTION REQUIRED' : gpsState.geofenceStatus) : 'READY'}</span>
-            </div>
-          </div>
         </div>
 
-        <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-[0_30px_80px_-40px_rgba(15,23,42,0.4)] dark:border-slate-800 dark:bg-slate-900">
+        <div className="rounded-[30px] border border-slate-200 bg-white p-4 shadow-[0_30px_80px_-40px_rgba(15,23,42,0.4)] dark:border-slate-800 dark:bg-slate-900">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-indigo-600 dark:text-indigo-300" />
             <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">Verification methods</div>
@@ -782,24 +883,36 @@ export const EmployeeAttendanceSelfService = ({
             {Object.entries(METHOD_META).map(([methodKey, methodMeta]) => {
               const active = selectedMethod === methodKey;
               const Icon = methodMeta.icon;
-              const isAvailable = allowedMethods.includes(methodKey) || methodKey === 'DIRECT';
+              const isAvailable = allowedMethods.includes(methodKey);
+              const isDisabled = !isAvailable;
               return (
                 <button
                   key={methodKey}
                   type="button"
-                  onClick={() => isAvailable && setSelectedMethod(methodKey)}
-                  disabled={!isAvailable}
-                  className={`group relative overflow-hidden rounded-2xl border p-3 text-left transition ${active ? 'border-indigo-200 bg-indigo-50 ring-2 ring-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/40 dark:ring-indigo-900' : 'border-slate-200 bg-slate-50 hover:border-indigo-200 hover:bg-indigo-50/60 dark:border-slate-700 dark:bg-slate-950/60 dark:hover:border-indigo-800'} ${!isAvailable ? 'cursor-not-allowed opacity-45' : ''}`}
+                  onClick={() => {
+                    if (!isDisabled) {
+                      setSelectedMethod(methodKey);
+                      setBlockingIssue(null);
+                      setStatusMessage('');
+                    }
+                  }}
+                  disabled={isDisabled}
+                  className={`group relative overflow-hidden rounded-2xl border p-3 text-left transition-all duration-200 ${active
+                    ? 'border-indigo-300 bg-indigo-50 ring-2 ring-indigo-100 shadow-[0_18px_40px_-28px_rgba(79,70,229,0.8)] dark:border-indigo-700 dark:bg-indigo-950/40 dark:ring-indigo-900'
+                    : isDisabled
+                      ? 'cursor-not-allowed border-slate-200 bg-slate-50 opacity-45 dark:border-slate-700 dark:bg-slate-950/60'
+                      : 'border-slate-200 bg-slate-50 hover:-translate-y-0.5 hover:border-indigo-200 hover:bg-indigo-50/70 dark:border-slate-700 dark:bg-slate-950/60 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/40'}`}
                 >
-                  <div className={`absolute inset-0 bg-gradient-to-br ${methodMeta.accent}`} />
+                  <div className={`absolute inset-0 bg-gradient-to-br ${methodMeta.accent} ${isDisabled ? 'opacity-30' : 'opacity-80'}`} />
                   <div className="relative flex items-start gap-3">
-                    <div className={`flex h-11 w-11 items-center justify-center rounded-xl bg-white text-slate-700 shadow-sm dark:bg-slate-900 dark:text-slate-200 ${active ? 'ring-2 ring-indigo-200 dark:ring-indigo-800' : ''}`}>
+                    <div className={`flex h-11 w-11 items-center justify-center rounded-xl bg-white text-slate-700 shadow-sm ring-1 ring-slate-200 transition-all duration-200 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700 ${active ? 'scale-105 ring-2 ring-indigo-200 dark:ring-indigo-800' : ''}`}>
                       <Icon className="h-5 w-5" />
                     </div>
                     <div className="flex-1">
                       <div className="flex items-center justify-between gap-2">
                         <div className="font-black text-slate-900 dark:text-white">{methodMeta.label}</div>
                         {active && <span className="rounded-full bg-indigo-600 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.18em] text-white">Selected</span>}
+                        {isDisabled && <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.18em] text-slate-600 dark:bg-slate-700 dark:text-slate-300">Unavailable</span>}
                       </div>
                       <div className="mt-1 text-[11px] text-slate-600 dark:text-slate-300">{methodMeta.short}</div>
                     </div>
@@ -818,124 +931,58 @@ export const EmployeeAttendanceSelfService = ({
             <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Adaptive verification</div>
           </div>
 
-          {selectedMethod === 'GPS' && (
-            <div className="mt-5 space-y-4">
-              <div className="rounded-[22px] border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/30">
+          <div className="mt-4 rounded-[24px] border border-indigo-100 bg-gradient-to-r from-indigo-50 via-white to-slate-50 p-4 dark:border-indigo-900 dark:from-indigo-950/40 dark:via-slate-950 dark:to-slate-950/60">
+            <div className="flex items-start gap-3">
+              <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${selectedMethod === 'GPS' ? 'bg-emerald-600' : selectedMethod === 'FACE' ? 'bg-violet-600' : selectedMethod === 'BIOMETRIC' ? 'bg-cyan-600' : selectedMethod === 'REMOTE' ? 'bg-sky-600' : selectedMethod === 'QR' ? 'bg-amber-600' : 'bg-indigo-600'} text-white shadow-sm`}>
+                {selectedMethod === 'GPS' && <MapPin className="h-5 w-5" />}
+                {selectedMethod === 'FACE' && <Video className="h-5 w-5" />}
+                {selectedMethod === 'BIOMETRIC' && <Fingerprint className="h-5 w-5" />}
+                {selectedMethod === 'REMOTE' && <Wifi className="h-5 w-5" />}
+                {selectedMethod === 'QR' && <QrCode className="h-5 w-5" />}
+                {selectedMethod === 'DIRECT' && <CheckCircle2 className="h-5 w-5" />}
+                {!['GPS', 'FACE', 'BIOMETRIC', 'REMOTE', 'QR', 'DIRECT'].includes(selectedMethod) && <ShieldCheck className="h-5 w-5" />}
+              </div>
+              <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="text-sm font-black text-emerald-900 dark:text-emerald-200">Location security</div>
-                  <div className="rounded-full bg-emerald-600 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.18em] text-white">{gpsState.loading ? 'Checking' : gpsState.geofenceStatus}</div>
+                  <div className="text-sm font-black text-slate-900 dark:text-white">{METHOD_META[selectedMethod]?.label || selectedMethod} Verification</div>
+                  <span className="rounded-full bg-white/80 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.18em] text-slate-700 shadow-sm dark:bg-slate-900 dark:text-slate-200">
+                    {selectedMethod === 'GPS' ? (gpsState.loading ? 'Checking' : gpsState.geofenceStatus || 'READY') : 'READY'}
+                  </span>
                 </div>
-                <div className="mt-3 h-2.5 w-full overflow-hidden rounded-full bg-emerald-100 dark:bg-emerald-950/80">
-                  <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-400" style={{ width: `${gpsState.loading ? 55 : gpsState.latitude !== null ? 92 : 18}%` }} />
-                </div>
-                <div className="mt-3 text-xs text-emerald-800 dark:text-emerald-200">
-                  {gpsState.loading ? 'Acquiring secure location for attendance validation...' : gpsState.error ? gpsState.error : gpsState.latitude !== null ? 'Secure location captured successfully.' : 'Allow browser location access to validate your attendance zone.'}
-                </div>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
-                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Latitude</div>
-                  <div className="mt-2 text-base font-black text-slate-900 dark:text-white">{gpsState.latitude !== null ? gpsState.latitude.toFixed(5) : '—'}</div>
-                </div>
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
-                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Longitude</div>
-                  <div className="mt-2 text-base font-black text-slate-900 dark:text-white">{gpsState.longitude !== null ? gpsState.longitude.toFixed(5) : '—'}</div>
-                </div>
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
-                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Accuracy</div>
-                  <div className="mt-2 text-base font-black text-slate-900 dark:text-white">{gpsState.accuracy !== null ? `${Math.round(gpsState.accuracy)} m` : '—'}</div>
-                </div>
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
-                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Distance</div>
-                  <div className="mt-2 text-base font-black text-slate-900 dark:text-white">{gpsState.distance !== null ? `${Math.round(gpsState.distance)} m` : '—'}</div>
-                </div>
-              </div>
-
-              {gpsState.geofenceStatus === 'OUTSIDE' && (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
-                  <div className="flex items-center gap-2 text-sm font-black">
-                    <AlertCircle className="h-4 w-4" />
-                    Location attention required
-                  </div>
-                  <div className="mt-2 text-xs text-amber-800 dark:text-amber-200">
-                    Your current location is outside the assigned attendance zone. You may switch to another supported verification method or retry location capture.
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {selectedMethod === 'FACE' && (
-            <div className="mt-5 rounded-[26px] border border-violet-200 bg-violet-50 p-5 dark:border-violet-900 dark:bg-violet-950/30">
-              <div className="flex items-center gap-3">
-                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white dark:bg-slate-900">
-                  <Video className="h-5 w-5 text-violet-600 dark:text-violet-300" />
-                </div>
-                <div>
-                  <div className="text-sm font-black text-violet-900 dark:text-violet-200">Face verification</div>
-                  <div className="text-xs text-violet-700 dark:text-violet-300">Identity confirmation in progress</div>
-                </div>
-              </div>
-              <div className="mt-4 rounded-[20px] border border-dashed border-violet-300 bg-white/40 p-4 text-xs text-violet-800 dark:border-violet-700 dark:bg-slate-950/45 dark:text-violet-200">
-                Camera-based identity verification is available in supported environments. If a device or permission is unavailable, the system will remain in a safe readiness state until verification can be completed.
+                <div className="mt-1 text-xs text-slate-600 dark:text-slate-300">{METHOD_META[selectedMethod]?.short || 'Secure attendance validation'}</div>
               </div>
             </div>
-          )}
 
-          {selectedMethod === 'BIOMETRIC' && (
-            <div className="mt-5 rounded-[26px] border border-cyan-200 bg-cyan-50 p-5 dark:border-cyan-900 dark:bg-cyan-950/30">
-              <div className="flex items-center gap-3">
-                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white dark:bg-slate-900">
-                  <Fingerprint className="h-5 w-5 text-cyan-600 dark:text-cyan-300" />
-                </div>
-                <div>
-                  <div className="text-sm font-black text-cyan-900 dark:text-cyan-200">Biometric verification</div>
-                  <div className="text-xs text-cyan-700 dark:text-cyan-300">Secure authentication</div>
-                </div>
-              </div>
-              <div className="mt-4 rounded-[20px] border border-dashed border-cyan-300 bg-white/40 p-4 text-xs text-cyan-800 dark:border-cyan-700 dark:bg-slate-950/45 dark:text-cyan-200">
-                Biometrics are validated through the system’s secure authentication flow when supported by the enrolled device and security policy.
-              </div>
+            <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 text-[11px] text-slate-600 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-300">
+              <span>{workModePolicy.policyLabel}</span>
+              <span className="font-semibold text-slate-900 dark:text-white">{selectedMethod === 'GPS' ? (gpsState.distance !== null ? `${Math.round(gpsState.distance)}m from office` : 'Location available') : 'System ready'}</span>
             </div>
-          )}
 
-          {selectedMethod === 'QR' && (
-            <div className="mt-5 rounded-[26px] border border-amber-200 bg-amber-50 p-5 dark:border-amber-900 dark:bg-amber-950/30">
-              <div className="flex items-center gap-3">
-                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white dark:bg-slate-900">
-                  <QrCode className="h-5 w-5 text-amber-600 dark:text-amber-300" />
-                </div>
-                <div>
-                  <div className="text-sm font-black text-amber-900 dark:text-amber-200">QR / Kiosk verification</div>
-                  <div className="text-xs text-amber-700 dark:text-amber-300">Workplace kiosk validation</div>
-                </div>
+            {selectedMethod === 'GPS' && (
+              <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200">
+                {gpsState.loading ? 'Checking location...' : gpsState.error ? gpsState.error : gpsState.latitude !== null ? 'Secure location captured successfully.' : 'Allow browser location access to validate your attendance zone.'}
               </div>
-              <div className="mt-4 rounded-[20px] border border-dashed border-amber-300 bg-white/40 p-4 text-xs text-amber-800 dark:border-amber-700 dark:bg-slate-950/45 dark:text-amber-200">
-                Scan the approved QR code or use the workplace kiosk to verify your attendance before starting or ending the workday.
-              </div>
-            </div>
-          )}
+            )}
 
-          {selectedMethod === 'DIRECT' && (
-            <div className="mt-5 rounded-[26px] border border-indigo-200 bg-indigo-50 p-5 dark:border-indigo-900 dark:bg-indigo-950/30">
-              <div className="flex items-center gap-3">
-                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white dark:bg-slate-900">
-                  <CheckCircle2 className="h-5 w-5 text-indigo-600 dark:text-indigo-300" />
-                </div>
-                <div>
-                  <div className="text-sm font-black text-indigo-900 dark:text-indigo-200">Direct attendance</div>
-                  <div className="text-xs text-indigo-700 dark:text-indigo-300">Quick attendance workflow</div>
-                </div>
+            {selectedMethod === 'REMOTE' && workModePolicy.requiresApproval && (
+              <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                Remote attendance requires approval before the session can proceed.
               </div>
-              <div className="mt-4 rounded-[20px] border border-dashed border-indigo-300 bg-white/40 p-4 text-xs text-indigo-800 dark:border-indigo-700 dark:bg-slate-950/45 dark:text-indigo-200">
-                Direct attendance is available for a secure, intentional workday start or end, while still preserving the existing backend attendance check-in/check-out workflow.
+            )}
+
+            {resolveBlockingIssue && (
+              <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                <div className="flex items-center gap-2 font-bold">
+                  <AlertCircle className="h-4 w-4" />
+                  {resolveBlockingIssue.title}
+                </div>
+                <div className="mt-1">{resolveBlockingIssue.message}</div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
-        <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-[0_30px_80px_-40px_rgba(15,23,42,0.4)] dark:border-slate-800 dark:bg-slate-900">
+        <div className="rounded-[30px] border border-slate-200 bg-white p-3 shadow-[0_30px_80px_-40px_rgba(15,23,42,0.4)] dark:border-slate-800 dark:bg-slate-900">
           <div className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-indigo-600 dark:text-indigo-300" />
             <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">AI attendance insights</div>
@@ -952,7 +999,7 @@ export const EmployeeAttendanceSelfService = ({
             ))}
           </div>
 
-          <div className="mt-5 rounded-[22px] border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/60">
+          <div className="mt-5 rounded-[22px] border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
             <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">This month</div>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div className="rounded-2xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
@@ -976,7 +1023,7 @@ export const EmployeeAttendanceSelfService = ({
         </div>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">
+      <div className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
         <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-[0_30px_80px_-40px_rgba(15,23,42,0.4)] dark:border-slate-800 dark:bg-slate-900">
           <div className="flex items-center gap-2">
             <CalendarCheck2 className="h-4 w-4 text-indigo-600 dark:text-indigo-300" />
@@ -987,27 +1034,28 @@ export const EmployeeAttendanceSelfService = ({
             <div className="relative">
               <div className="absolute left-4 top-2 h-[calc(100%-1rem)] w-0.5 bg-gradient-to-b from-indigo-300 via-indigo-400 to-sky-400 dark:from-indigo-700 dark:via-indigo-600 dark:to-sky-600" />
               <div className="space-y-4 pl-10">
-                <div className="relative rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
-                  <div className="absolute -left-[34px] top-5 h-3.5 w-3.5 rounded-full border-4 border-white bg-emerald-500 shadow-md dark:border-slate-900" />
-                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Check-in</div>
-                  <div className="mt-1 text-base font-black text-slate-900 dark:text-white">{formatTime(currentCheckIn)}</div>
-                </div>
-                <div className="relative rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
-                  <div className="absolute -left-[34px] top-5 h-3.5 w-3.5 rounded-full border-4 border-white bg-indigo-500 shadow-md dark:border-slate-900" />
-                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Current</div>
-                  <div className="mt-1 text-base font-black text-slate-900 dark:text-white">{attendanceStatus}</div>
-                </div>
-                <div className="relative rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
-                  <div className="absolute -left-[34px] top-5 h-3.5 w-3.5 rounded-full border-4 border-white bg-sky-500 shadow-md dark:border-slate-900" />
-                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">Check-out</div>
-                  <div className="mt-1 text-base font-black text-slate-900 dark:text-white">{formatTime(currentCheckOut)}</div>
-                </div>
+                {recentTimelineRecords.length === 0 && (
+                  <div className="text-sm text-slate-600 dark:text-slate-300">No recent timeline events.</div>
+                )}
+                {recentTimelineRecords.map((rec, idx) => {
+                  const recCheckIn = getRecordValue(rec, ['checkIn', 'CheckIn', 'in', 'In', 'check_in']);
+                  const recCheckOut = getRecordValue(rec, ['checkOut', 'CheckOut', 'out', 'Out', 'check_out']);
+                  const recHours = getRecordValue(rec, ['hours', 'Hours', 'totalHours']);
+                  const recMethod = getMethodKey(getRecordValue(rec, ['verificationMethod', 'VerificationMethod', 'verification']));
+                  return (
+                    <div key={recordEmpIdKey(rec) + idx} className="relative rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
+                      <div className="absolute -left-[34px] top-5 h-3.5 w-3.5 rounded-full border-4 border-white bg-indigo-500 shadow-md dark:border-slate-900" />
+                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">{formatDateLabel(getRecordValue(rec, ['date', 'Date', 'workDate']))}</div>
+                      <div className="mt-1 text-base font-black text-slate-900 dark:text-white">{formatTime(recCheckIn)} • {formatTime(recCheckOut)} • {formatHourValue(recHours)} • {recMethod}</div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
         </div>
 
-        <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-[0_30px_80px_-40px_rgba(15,23,42,0.4)] dark:border-slate-800 dark:bg-slate-900">
+        <div className="rounded-[30px] border border-slate-200 bg-white p-4 shadow-[0_30px_80px_-40px_rgba(15,23,42,0.4)] dark:border-slate-800 dark:bg-slate-900">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <TimerReset className="h-4 w-4 text-indigo-600 dark:text-indigo-300" />
@@ -1016,30 +1064,64 @@ export const EmployeeAttendanceSelfService = ({
             <div className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.18em] text-slate-700 dark:bg-slate-800 dark:text-slate-200">{attendanceStatus}</div>
           </div>
 
-          <div className="mt-5 rounded-[28px] border border-indigo-100 bg-gradient-to-br from-indigo-50 via-slate-50 to-indigo-100 p-5 dark:border-indigo-900 dark:from-indigo-950/60 dark:via-slate-950/60 dark:to-indigo-950/40">
+          <div className="mt-5 rounded-[28px] border border-indigo-100 bg-gradient-to-br from-indigo-50 via-slate-50 to-indigo-100 p-4 dark:border-indigo-900 dark:from-indigo-950/60 dark:via-slate-950/60 dark:to-indigo-950/40">
             <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-indigo-700 dark:text-indigo-300">{canCheckOut ? 'Work in progress' : canCheckIn ? 'Ready to start' : 'Completed'}</div>
             <button
               type="button"
               onClick={handleAction}
               disabled={isSubmitting || (!canCheckIn && !canCheckOut)}
-              className={`mt-4 flex w-full items-center justify-center gap-2 rounded-2xl px-4 py-4 text-base font-black text-white transition ${canCheckIn ? 'bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500' : canCheckOut ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500' : 'bg-slate-400 cursor-not-allowed'} ${isSubmitting ? 'opacity-80' : ''}`}
+              className={`mt-4 flex w-full items-center justify-center gap-2 rounded-2xl px-4 py-4 text-base font-black text-white shadow-lg transition-all duration-200 active:scale-[0.98] ${canCheckIn ? 'bg-gradient-to-r from-indigo-600 to-violet-600 shadow-indigo-500/20 hover:from-indigo-500 hover:to-violet-500' : canCheckOut ? 'bg-gradient-to-r from-emerald-600 to-teal-600 shadow-emerald-500/20 hover:from-emerald-500 hover:to-teal-500' : 'bg-slate-400 cursor-not-allowed shadow-slate-200'} ${isSubmitting ? 'opacity-80' : ''}`}
             >
-              {isSubmitting ? 'Updating...' : canCheckOut ? 'Check Out Safely' : canCheckIn ? 'Start Workday' : 'Workday Completed'}
-              <ArrowRight className="h-4 w-4" />
+              {isSubmitting ? (
+                <>
+                  <span className="inline-flex h-4 w-4 animate-spin rounded-full border-2 border-white/60 border-t-white" />
+                  {selectedMethod === 'GPS' ? 'Checking location...' : selectedMethod === 'REMOTE' ? 'Connecting remote attendance...' : selectedMethod === 'FACE' ? 'Verifying identity...' : selectedMethod === 'BIOMETRIC' ? 'Verifying biometric...' : 'Creating attendance record...'}
+                </>
+              ) : canCheckOut ? 'Check Out Safely' : canCheckIn ? 'Start Workday' : 'Workday Completed'}
+              {!isSubmitting && <ArrowRight className="h-4 w-4" />}
             </button>
-            {statusMessage && (
-              <div className="mt-4 flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-                <AlertCircle className="h-4 w-4" />
-                {statusMessage}
+            {(statusMessage || blockingIssue) && (
+              <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <div className="flex-1">
+                    <div className="font-bold">{blockingIssue?.title || 'Attention required'}</div>
+                    <div className="mt-1">{statusMessage || blockingIssue?.message}</div>
+                    {blockingIssue && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {blockingIssue.canRetry && (
+                          <button
+                            type="button"
+                            onClick={retryLocation}
+                            className="rounded-xl bg-amber-600 px-3 py-1.5 font-bold text-white transition hover:bg-amber-500"
+                          >
+                            Retry / Enable Location
+                          </button>
+                        )}
+                        {blockingIssue.canRequestException && (
+                          <button
+                            type="button"
+                            onClick={openExceptionRequest}
+                            className="rounded-xl border border-amber-300 bg-white px-3 py-1.5 font-bold text-amber-800 transition hover:bg-amber-100 dark:border-amber-700 dark:bg-slate-900 dark:text-amber-200 dark:hover:bg-amber-950/40"
+                          >
+                            Request Attendance Exception
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
-            <button
-              type="button"
-              onClick={() => setShowExceptionModal(true)}
-              className="mt-4 w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-700 transition hover:border-indigo-200 hover:bg-indigo-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/40"
-            >
-              Request attendance exception
-            </button>
+            {!blockingIssue && (
+              <button
+                type="button"
+                onClick={openExceptionRequest}
+                className="mt-4 w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-700 transition hover:border-indigo-200 hover:bg-indigo-50 active:scale-[0.99] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/40"
+              >
+                Request attendance exception
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1094,7 +1176,7 @@ export const EmployeeAttendanceSelfService = ({
                 <div className="text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">Attendance exception</div>
                 <h3 className="mt-2 text-2xl font-black text-slate-900 dark:text-white">Request attendance exception</h3>
               </div>
-              <button type="button" onClick={() => setShowExceptionModal(false)} className="rounded-full border border-slate-200 px-2.5 py-1 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">Close</button>
+              <button type="button" onClick={() => { setShowExceptionModal(false); setBlockingIssue(null); }} className="rounded-full border border-slate-200 px-2.5 py-1 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">Close</button>
             </div>
 
             <div className="mt-5 space-y-4">
@@ -1138,7 +1220,7 @@ export const EmployeeAttendanceSelfService = ({
             </div>
 
             <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-              <button type="button" onClick={() => setShowExceptionModal(false)} className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold text-slate-700 dark:border-slate-700 dark:text-slate-200">Cancel</button>
+              <button type="button" onClick={() => { setShowExceptionModal(false); setBlockingIssue(null); }} className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold text-slate-700 dark:border-slate-700 dark:text-slate-200">Cancel</button>
               <button type="button" onClick={handleExceptionSubmit} disabled={exceptionSubmitting} className="rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-indigo-500/20 transition hover:from-indigo-500 hover:to-violet-500 disabled:cursor-not-allowed disabled:opacity-75">
                 {exceptionSubmitting ? 'Submitting...' : 'Submit request'}
               </button>
