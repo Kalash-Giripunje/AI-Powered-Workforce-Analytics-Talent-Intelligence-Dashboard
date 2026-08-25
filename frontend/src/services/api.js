@@ -223,6 +223,8 @@ export const api = {
   getReportSummary: () => apiClient.get('/reports/summary'),
   // Download report by relative URL (returns a blob)
   downloadReportByUrl: (downloadUrl) => apiClient.get(downloadUrl, { responseType: 'blob' }),
+  // Helper exposed on the api object so callers can trigger authenticated download+save
+  downloadAndSave: (downloadUrl, filename, opts = {}) => downloadAndSave(downloadUrl, filename, opts),
 
   // Settings
   getSettings: () => apiClient.get('/settings'),
