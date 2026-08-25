@@ -1,8 +1,294 @@
-# AI Workforce Management Automation System - Complete Technical Documentation
+# NEXUS.AI Workforce Management Automation System
+
+An AI-powered Enterprise Workforce Management and Automation System providing attendance, verification, scheduling, and HR features with a React (Vite) frontend and FastAPI backend backed by MongoDB.
 
 ---
 
-## 1. Complete Folder Structure
+## Overview
+
+This repository implements an AI-enhanced workforce management system with the following modules (implemented in this project):
+
+- Authentication (JWT bootstrap/admin flows)
+- Employee Management
+- Role-Based Access Control (RBAC)
+- Dashboard
+- Attendance Management (today context, check-in/check-out)
+- Attendance History and reporting
+- GPS-based location verification and geofence logic
+- Face / Biometric / Remote / QR / Standard / Direct verification UI hooks
+- Leave Management
+- Shift Management
+- Timesheet Management
+- Payroll (UI hooks & endpoints)
+- Performance Management
+- Notifications and Audit logs
+- AI features (Gemini integration hooks for insights)
+- Background Automation (APScheduler jobs)
+
+Only features that are present in the codebase are described above.
+
+---
+
+## Architecture
+
+Frontend (React + Vite)
+        ↓
+FastAPI Backend (backend.app)
+        ↓
+MongoDB (Motor / PyMongo)
+        ↓
+Automation & AI services (APScheduler, Gemini integrations)
+
+---
+
+## Technology Stack
+
+- Frontend: React, Vite, Tailwind CSS
+- Backend: FastAPI, Uvicorn
+- Database: MongoDB (Motor)
+- Scheduler: APScheduler
+- Auth: JWT (PyJWT), bcrypt for password hashing
+- AI: Google Gemini client (optional)
+
+---
+
+## Project structure (key files)
+
+- backend/
+  - app/
+    - main.py            # FastAPI app and lifespan startup
+    - config.py          # Settings (loads .env via pydantic-settings)
+    - database.py        # MongoDB connect/disconnect helpers
+    - routers/           # API routers (attendance, auth, employees, ...)
+    - automation/        # Scheduler and job registry
+    - services/          # Business logic (workforce_services.py)
+  - requirements.txt
+
+- frontend/
+  - src/                # React app source
+  - package.json
+  - .env                # frontend env (VITE_API_URL)
+
+- .env.example
+- .gitignore
+
+---
+
+## Prerequisites
+
+- Git
+- Python 3.11+
+- Node.js 18+ and npm
+- MongoDB (Atlas recommended) or local MongoDB instance
+
+---
+
+## Clone
+
+```powershell
+git clone <repository-url>
+cd "workforce-management-automation-system"
+```
+
+Replace `<repository-url>` with your repository URL or fork.
+
+---
+
+## Backend setup (Windows)
+
+1. Create & activate a virtual environment
+
+```powershell
+python -m venv .venv
+# PowerShell
+.\.venv\Scripts\Activate.ps1
+# (cmd.exe) .\.venv\Scripts\activate
+```
+
+2. Install requirements
+
+```powershell
+pip install --upgrade pip
+pip install -r backend/requirements.txt
+```
+
+3. Create `.env` from `.env.example` and fill values
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+Required variables (examples in `.env.example`):
+- MONGODB_URL
+- DATABASE_NAME
+- JWT_SECRET_KEY
+- AUTH_BOOTSTRAP_PASSWORD
+- VITE_API_URL (frontend)
+- AUTOMATION_ENABLED (True/False)
+
+4. Start backend
+
+Development with reload (iterative):
+
+```powershell
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Stable single-process (recommended when AUTOMATION_ENABLED=True):
+
+```powershell
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
+
+Notes:
+- The app reads `.env` using pydantic-settings (case_sensitive=True). Do not commit `.env`.
+- When running the scheduler (AUTOMATION_ENABLED=True) prefer a single-process run (no --reload) to avoid duplicate scheduler instances.
+
+---
+
+## Frontend setup
+
+1. Install and run
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+2. Default frontend URL
+
+Vite usually serves on `http://localhost:5173`. If that port is in use Vite will select the next available port (e.g. 5174). Check the `npm run dev` terminal output for the exact URL.
+
+3. Frontend API config
+
+Edit `frontend/.env` to set `VITE_API_URL` (default: `http://127.0.0.1:8000`).
+
+---
+
+## Environment variables and .env.example
+
+A `.env.example` file is present at the repository root. It contains all required variable names with placeholders and no secrets. Copy it to `.env` and fill in real values.
+
+Important variables to set locally:
+- MONGODB_URL
+- DATABASE_NAME
+- JWT_SECRET_KEY
+- AUTH_BOOTSTRAP_PASSWORD
+- VITE_API_URL
+- AUTOMATION_ENABLED (False for most devs)
+- OFFICE_LATITUDE / OFFICE_LONGITUDE / OFFICE_GEOFENCE_RADIUS_METERS
+
+I have updated `.env.example` to include automation and geofence keys. The actual `.env` must never be committed.
+
+---
+
+## Database setup
+
+- Option A: Use your own MongoDB Atlas database. Provide the connection string in `MONGODB_URL` and ensure your IP is allowlisted.
+- Option B: Use a shared development database (coordinate with the team). If you use a shared DB, do not enable automation simultaneously with other developers.
+
+If seed/fixture scripts exist, they are documented in the backend database module; otherwise request demo data from the project owner.
+
+---
+
+## Test credentials (development only)
+
+- Employee (dev):
+  - EmpID: `EMP000001`
+  - Password: `EMP000001`
+
+- Admin: set `AUTH_BOOTSTRAP_PASSWORD` before first run to seed admin account.
+
+---
+
+## Automation & Scheduler
+
+- `AUTOMATION_ENABLED=False` disables APScheduler background jobs.
+- `AUTOMATION_ENABLED=True` enables the scheduler and registers jobs (as implemented in `backend/app/automation/registry.py`):
+  - `attendance_reconciliation`
+  - `missing_checkout_detection`
+  - `late_arrival_detection`
+  - `leave_reminder`
+  - `notification_maintenance`
+
+Team rule: Do not have multiple developers run automation against the same DB simultaneously.
+
+---
+
+## Running the app (quick)
+
+Terminal 1 (backend):
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
+
+Terminal 2 (frontend):
+
+```powershell
+cd frontend
+npm run dev
+```
+
+Open the frontend URL reported by Vite.
+
+---
+
+## Common problems & troubleshooting
+
+- Port 8000 already in use: check `netstat -aon` to find owner. If another backend is running, prefer using it instead of starting a new one.
+- MongoDB connection errors: verify `MONGODB_URL` and network access.
+- Duplicate scheduler: if you see multiple automation runs, ensure you launched the backend without `--reload` or run automation in a single dedicated instance.
+- CORS issues: confirm `CORS_ALLOWED_ORIGINS` contains your frontend origin.
+
+---
+
+## Team workflow
+
+Suggested Git workflow:
+
+```bash
+git pull origin main
+git checkout -b feature/your-feature
+git add .
+git commit -m "Implement feature"
+git push origin feature/your-feature
+# Open a PR for review
+```
+
+Do not commit `.env`, `.venv`, `node_modules`, or any secrets.
+
+---
+
+## Security
+
+- Never commit secrets
+- Use separate dev and prod credentials
+- Rotate secrets if exposed
+
+---
+
+## Files created/modified by this documentation update
+
+- Modified: `.env.example` (added automation & geofence keys)
+- Modified: `README.md` (rewritten to a concise, developer-friendly guide)
+
+---
+
+## Missing items you will need to provide
+
+- Valid `MONGODB_URL` (Atlas or local connection string)
+- `JWT_SECRET_KEY` and `AUTH_BOOTSTRAP_PASSWORD`
+- Optional: `GEMINI_API_KEY` for AI features
+
+If you'd like, I can add a helper script to create a `.env` from `.env.example` with placeholder values.
+
+---
+
+If anything needs to be reworded or expanded for your team's conventions, tell me and I'll refine the README.
 
 ```
 .
