@@ -204,6 +204,7 @@ export function App() {
   const userRole = normalizeRole(authenticatedUser?.role || profile?.role || 'EMPLOYEE');
   const currentEmpName = authenticatedUser?.name || profile?.name || 'User';
   const currentEmpId = authenticatedUser?.empId || profile?.empId || null;
+  const employeeScopedPayrollId = userRole === 'EMPLOYEE' ? (currentEmpId || profile?.EmpID || profile?.EmpId || profile?.empId || null) : null;
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditLogsLoading, setAuditLogsLoading] = useState(false);
   const [auditLogsError, setAuditLogsError] = useState(null);
@@ -632,27 +633,48 @@ export function App() {
   }
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated) {
+      setPayroll([]);
+      setPayrollError(null);
+      return;
+    }
+
+    if (userRole === 'EMPLOYEE' && !employeeScopedPayrollId) {
+      setPayroll([]);
+      setPayrollError(null);
+      return;
+    }
+
     fetchPayroll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated]);
+  }, [isAuthenticated, userRole, employeeScopedPayrollId]);
 
   async function fetchPayroll(params = {}) {
+    const effectiveEmpId = userRole === 'EMPLOYEE' ? (employeeScopedPayrollId || currentEmpId || null) : null;
+
+    if (userRole === 'EMPLOYEE' && !effectiveEmpId) {
+      setPayroll([]);
+      setPayrollError(null);
+      setPayrollLoading(false);
+      return;
+    }
+
     setPayrollLoading(true);
     setPayrollError(null);
     try {
-      const finalParams = canViewTeam ? params : { ...params, empId: currentEmpId };
+      const finalParams = canViewTeam ? params : { ...params, empId: effectiveEmpId };
       const resp = await api.getPayroll(finalParams);
       const items = Array.isArray(resp) ? resp : [];
       const visible = canViewTeam ? items : (items || []).filter((p) => {
         const pid = p?.empId || p?.EmpID || p?.EmpId || p?.employeeId || null;
-        return pid && String(pid) === String(currentEmpId);
+        return pid && String(pid) === String(effectiveEmpId);
       });
       setPayroll(visible);
     } catch (err) {
       console.error('Failed to load payroll:', err);
       const message = err?.response?.data?.detail || err.message || 'Failed to load payroll';
       setPayrollError(message);
+      setPayroll([]);
     } finally {
       setPayrollLoading(false);
     }
@@ -1191,6 +1213,7 @@ export function App() {
               leaves={leaves}
               leaveBalance={leaveBalance}
               payroll={payroll}
+              payrollLoading={payrollLoading}
               shifts={shifts}
               holidays={holidays}
               holidaysLoading={holidaysLoading}

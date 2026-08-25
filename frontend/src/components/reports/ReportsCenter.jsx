@@ -31,10 +31,40 @@ import {
 } from 'recharts';
 import apiClient, { api, downloadFileByUrl } from '../../services/api';
 
+const normalizeReportDateRange = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return 'Current Month';
+
+  const parenthetical = text.includes('(') && text.includes(')')
+    ? text.slice(text.lastIndexOf('(') + 1, text.lastIndexOf(')')).trim()
+    : text;
+
+  const normalized = parenthetical.trim();
+  const canonicalMap = {
+    'current month': 'Current Month',
+    'current quarter': 'Current Quarter',
+    'last 30 days': 'Last 30 Days',
+    'year to date': 'Year to Date',
+    'all time': 'All Time',
+    'current week': 'Current Week',
+  };
+
+  return canonicalMap[normalized.toLowerCase()] || (VALID_REPORT_DATE_RANGES.includes(normalized) ? normalized : 'Current Month');
+};
+
+const VALID_REPORT_DATE_RANGES = [
+  'Current Month',
+  'Current Quarter',
+  'Last 30 Days',
+  'Year to Date',
+  'All Time',
+  'Current Week',
+];
+
 export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => {
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [selectedFormat, setSelectedFormat] = useState('PDF');
-  const [selectedPeriod, setSelectedPeriod] = useState('August 2026 (Current Month)');
+  const [selectedPeriod, setSelectedPeriod] = useState('Current Month');
   const [selectedDept, setSelectedDept] = useState('ALL');
   const [selectedEmployee, setSelectedEmployee] = useState('ALL');
   const [downloadSuccess, setDownloadSuccess] = useState(null);
@@ -177,17 +207,7 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
   }
 
   async function handleGenerateCustomReport() {
-    // Normalize date range: prefer a canonical token when the UI shows a friendly label
-    // Example UI label: "August 2026 (Current Month)" -> send "Current Month" to the API
-    let canonicalDateRange = selectedPeriod || '';
-    if (canonicalDateRange.includes('(') && canonicalDateRange.includes(')')) {
-      try {
-        const inner = canonicalDateRange.substring(canonicalDateRange.lastIndexOf('(') + 1, canonicalDateRange.lastIndexOf(')')).trim();
-        if (inner) canonicalDateRange = inner;
-      } catch (e) {
-        // fallback: keep original
-      }
-    }
+    const canonicalDateRange = normalizeReportDateRange(selectedPeriod);
 
     const isUltraBroadScope = selectedDept === 'ALL' && selectedEmployee === 'ALL' && (canonicalDateRange.toLowerCase().includes('year') || canonicalDateRange.toLowerCase().includes('current month') || canonicalDateRange.toLowerCase().includes('quarter'));
     if (isUltraBroadScope) {
@@ -197,8 +217,23 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
       return;
     }
 
+    // Normalize department values to match backend canonical names
+    const departmentNormalization = {
+      'Product Mgmt': 'Product Management',
+      'ALL': 'All',
+      'All Departments': 'All',
+      'Finance & Payroll': 'Finance & Payroll',
+      'Human Resources': 'Human Resources',
+      'Operations': 'Operations',
+      'Engineering': 'Engineering'
+    };
+
+    const normalizedDept = (selectedDept === 'ALL')
+      ? 'All'
+      : (departmentNormalization[selectedDept] || selectedDept);
+
     const payload = {
-      department: selectedDept === 'ALL' ? 'All' : selectedDept,
+      department: normalizedDept,
       dateRange: canonicalDateRange,
       format: selectedFormat
     };
@@ -215,25 +250,13 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
       const downloadUrl = response?.downloadUrl;
       if (downloadUrl) {
         try {
-          const blobResponse = await downloadFileByUrl(downloadUrl);
-          const blob = blobResponse && blobResponse.data ? blobResponse.data : blobResponse;
-          if (!blob || (typeof blob.size === 'number' && blob.size === 0)) {
-            throw new Error('Empty file received');
-          }
-
           const fmt = (payload.format || 'PDF').toLowerCase();
           const ext = fmt === 'xlsx' ? 'xlsx' : fmt === 'csv' ? 'csv' : fmt === 'json' ? 'json' : 'pdf';
           const safeName = (response?.reportName || 'report').replace(/[^a-z0-9\-_\. ]/gi, '_');
           const filename = `${safeName}.${ext}`;
 
-          const objectUrl = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = objectUrl;
-          a.download = filename;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          URL.revokeObjectURL(objectUrl);
+          // Use API helper that performs authenticated request and triggers the browser download
+          await api.downloadAndSave(downloadUrl, filename);
 
           setDownloadSuccess(response?.reportName || 'Custom report downloaded');
           setTimeout(() => setDownloadSuccess(null), 4000);
@@ -278,19 +301,12 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
     try {
       const fmt = (report.format || 'JSON').toUpperCase();
       const downloadUrl = `/reports/download?format=${encodeURIComponent(fmt)}&department=${encodeURIComponent('All')}&dateRange=${encodeURIComponent('Current Month')}`;
-      const blob = await apiClient.get(downloadUrl, { responseType: 'blob' });
-      if (!blob || (typeof blob.size === 'number' && blob.size === 0)) throw new Error('Empty file received');
       const ext = fmt === 'XLSX' ? 'xlsx' : fmt === 'CSV' ? 'csv' : fmt === 'JSON' ? 'json' : 'pdf';
       const safeName = (report.title || 'report').replace(/[^a-z0-9\-_\. ]/gi, '_');
       const filename = `${safeName}.${ext}`;
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = objectUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(objectUrl);
+
+      await api.downloadAndSave(downloadUrl, filename);
+
       setDownloadSuccess(report.title || 'Report downloaded');
       setTimeout(() => setDownloadSuccess(null), 4000);
     } catch (err) {
@@ -443,10 +459,12 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
                   onChange={(e) => setSelectedPeriod(e.target.value)}
                   className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2 font-medium text-slate-800 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
                 >
-                  <option value="August 2026 (Current Month)">August 2026 (Current Month)</option>
-                  <option value="July 2026">July 2026</option>
-                  <option value="Q2 2026 Executive Summary">Q2 2026 Executive Summary</option>
-                  <option value="Year-to-Date 2026">Year-to-Date 2026</option>
+                  <option value="Current Month">August 2026 (Current Month)</option>
+                  <option value="Last 30 Days">Last 30 Days</option>
+                  <option value="Current Quarter">Q2 2026 Executive Summary</option>
+                  <option value="Year to Date">Year to Date</option>
+                  <option value="Current Week">Current Week</option>
+                  <option value="All Time">All Time</option>
                 </select>
               </div>
 

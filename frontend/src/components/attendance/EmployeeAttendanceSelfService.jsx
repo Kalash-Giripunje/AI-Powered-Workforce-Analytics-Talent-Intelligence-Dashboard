@@ -169,6 +169,12 @@ const getMethodKey = (value) => {
   return 'DIRECT';
 };
 
+const toBackendVerificationMethod = (value) => {
+  const normalized = getMethodKey(value);
+  if (normalized === 'FACE') return 'FACIAL';
+  return normalized;
+};
+
 const calculateHaversineDistance = (latitudeA, longitudeA, latitudeB, longitudeB) => {
   const radius = 6371000;
   const toRadians = (value) => (value * Math.PI) / 180;
@@ -356,9 +362,14 @@ export const EmployeeAttendanceSelfService = ({
         });
       },
       (error) => {
+        const permissionMessage = error?.code === 1
+          ? 'Location access was blocked by the browser. Please enable location permissions for this site and retry, or choose another allowed verification method.'
+          : error?.message || 'Location permission was denied.';
+
+        setStatusMessage(permissionMessage);
         setGpsState({
           loading: false,
-          error: error?.message || 'Location permission was denied.',
+          error: permissionMessage,
           latitude: null,
           longitude: null,
           accuracy: null,
@@ -634,8 +645,9 @@ export const EmployeeAttendanceSelfService = ({
     setStatusMessage('');
 
     try {
+      const backendVerificationMethod = toBackendVerificationMethod(selectedMethod);
       const payload = {
-        verificationMethod: selectedMethod,
+        verificationMethod: backendVerificationMethod,
         verificationStatus: selectedMethod === 'GPS' ? (gpsState.geofenceStatus === 'OUTSIDE' ? 'Location outside approved area' : 'Verified') : selectedMethod === 'REMOTE' ? 'Remote verification approved' : selectedMethod === 'DIRECT' ? 'Directly Approved' : 'Approved',
         workMode: effectiveWorkMode,
         ...(selectedMethod === 'GPS' && gpsState.latitude !== null && gpsState.longitude !== null ? { latitude: gpsState.latitude, longitude: gpsState.longitude } : {}),

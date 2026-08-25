@@ -41,6 +41,7 @@ export const ExecutiveDashboard = ({
   onOpenAIChat = () => {},
   shifts = [],
   payroll = [],
+  payrollLoading = false,
   leaveBalance = {},
   profile = null,
   holidays = [],
@@ -262,10 +263,32 @@ export const ExecutiveDashboard = ({
       const pid = deriveEmpId(p);
       return pid && myEmpId && String(pid) === String(myEmpId);
     }).sort((a, b) => {
-      const aMonth = a.PayrollMonth || a.payrollMonth || '0000-00';
-      const bMonth = b.PayrollMonth || b.payrollMonth || '0000-00';
+      const aMonth = a.PayrollMonth ?? a.payrollMonth ?? a.month ?? '0000-00';
+      const bMonth = b.PayrollMonth ?? b.payrollMonth ?? b.month ?? '0000-00';
       return String(bMonth).localeCompare(String(aMonth));
     })[0];
+
+    const latestPayrollDisplay = (() => {
+      if (payrollLoading) return 'Loading...';
+      if (!myPayroll) return 'No payroll available';
+      const rawValue = myPayroll.NetSalary ?? myPayroll.netSalary ?? myPayroll.NetPay ?? myPayroll.netPay ?? null;
+      if (rawValue === null || rawValue === undefined || Number.isNaN(Number(rawValue))) {
+        return 'No payroll available';
+      }
+      return `₹${Number(rawValue).toLocaleString()}`;
+    })();
+
+    const latestPayrollPeriod = (() => {
+      if (payrollLoading) return 'Loading...';
+      if (!myPayroll) return 'No payroll available';
+      return myPayroll?.PayrollMonth ?? myPayroll?.payrollMonth ?? myPayroll?.month ?? 'No payroll available';
+    })();
+
+    const latestPayrollStatus = (() => {
+      if (payrollLoading) return 'Loading...';
+      if (!myPayroll) return 'No payroll available';
+      return 'Processed';
+    })();
 
     const leaveBalanceSummary = leaveBalance || {
       casualLeave: { remaining: 0, total: 0 },
@@ -442,11 +465,11 @@ export const ExecutiveDashboard = ({
       (Array.isArray(payroll) ? payroll : []).forEach((entry) => {
         const pid = deriveEmpId(entry);
         if (!pid || !myEmpId || String(pid) !== String(myEmpId)) return;
-        const dateValue = entry?.PayrollMonth || entry?.payrollMonth || entry?.ProcessedOn || entry?.processedOn || new Date();
+        const dateValue = entry?.PayrollMonth ?? entry?.payrollMonth ?? entry?.month ?? entry?.ProcessedOn ?? entry?.processedOn ?? new Date();
         pushItem({
           type: 'payroll',
           label: 'Payroll processed',
-          detail: `Net salary ${entry?.NetSalary ?? entry?.netSalary ?? entry?.NetPay ?? 'N/A'}`,
+          detail: `Net salary ${entry?.NetSalary ?? entry?.netSalary ?? entry?.NetPay ?? entry?.netPay ?? 'N/A'}`,
           dateValue,
           target: 'payroll',
         });
@@ -603,7 +626,7 @@ export const ExecutiveDashboard = ({
                 <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-950/60">
                   <div>
                     <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Latest salary</div>
-                    <div className="mt-1 text-xl font-black text-slate-900 dark:text-white">{myPayroll ? `${myPayroll.NetSalary ?? myPayroll.netSalary ?? myPayroll.NetPay ?? 'N/A'}` : 'N/A'}</div>
+                    <div className="mt-1 text-xl font-black text-slate-900 dark:text-white">{latestPayrollDisplay}</div>
                   </div>
                   <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300">
                     <DollarSign className="h-5 w-5" />
@@ -728,7 +751,7 @@ export const ExecutiveDashboard = ({
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-700 dark:text-emerald-300">Latest salary</div>
-                  <div className="mt-2 text-3xl font-black text-slate-900 dark:text-white">{myPayroll ? `₹${Number(myPayroll.NetSalary ?? myPayroll.netSalary ?? myPayroll.NetPay ?? 0).toLocaleString()}` : 'N/A'}</div>
+                  <div className="mt-2 text-3xl font-black text-slate-900 dark:text-white">{latestPayrollDisplay}</div>
                 </div>
                 <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-emerald-600 shadow-sm dark:bg-slate-900 dark:text-emerald-300">
                   <DollarSign className="h-5 w-5" />
@@ -736,11 +759,11 @@ export const ExecutiveDashboard = ({
               </div>
               <div className="mt-4 flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
                 <span>Period</span>
-                <span className="font-bold text-slate-900 dark:text-white">{myPayroll?.PayrollMonth || myPayroll?.payrollMonth || 'N/A'}</span>
+                <span className="font-bold text-slate-900 dark:text-white">{latestPayrollPeriod}</span>
               </div>
               <div className="mt-2 flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
                 <span>Payment</span>
-                <span className="font-bold text-emerald-700 dark:text-emerald-300">{myPayroll ? 'Processed' : 'Pending'}</span>
+                <span className="font-bold text-emerald-700 dark:text-emerald-300">{latestPayrollStatus}</span>
               </div>
             </div>
           </div>

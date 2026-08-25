@@ -98,26 +98,19 @@ async def _validate_export_scope(
             detail=f"Unsupported export format '{export_format}'."
         )
 
-    final_limit = MAX_REPORT_EXPORT_ROWS if limit is None else int(limit)
-    if final_limit < 1 or final_limit > MAX_REPORT_EXPORT_ROWS:
+    # Allow caller to request an unlimited count by omitting the `limit` parameter.
+    # If limit is provided, ensure it is a positive integer. Do not enforce a hard
+    # upper bound here — the download/generation endpoints will stream large CSV/JSON
+    # exports and may materialize smaller PDF/XLSX exports at the caller's risk.
+    final_limit = None if limit is None else int(limit)
+    if final_limit is not None and final_limit < 1:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Export limit must be between 1 and {MAX_REPORT_EXPORT_ROWS}."
+            detail="Export limit must be a positive integer."
         )
 
-    # Allow large all-department exports for streamable formats (CSV/JSON) by deferring
-    # row materialization to a streaming response. For binary formats (PDF/XLSX), enforce
-    # the size limit to avoid excessive memory usage.
-    if normalized_department.lower() == "all" and final_limit >= MAX_REPORT_EXPORT_ROWS:
-        if normalized_format in {"CSV", "JSON"}:
-            # permitted — caller must handle streaming
-            pass
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail="All-department report exports are limited to smaller bounded extracts. Please narrow the scope or reduce the limit for this format.",
-            )
-
+    # No hard 1000-record cap enforced here — return final_limit which may be None
+    # to indicate 'no limit' and let callers/streaming logic handle large result sets.
     return normalized_department, normalized_date_range, normalized_format, final_limit
 
 
@@ -136,11 +129,8 @@ async def _gather_report_data(db, department_filter: str, limit: int = MAX_REPOR
         employee_ids = [doc["EmpID"] for doc in employee_docs if doc.get("EmpID")]
 
     total_employees = await db.employees.count_documents(employee_query)
-    if total_employees > limit:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Requested export exceeds the maximum of {limit} records. Narrow the department or date range."
-        )
+    # Do not enforce a hard upper-bound here — callers may request all matching records.
+    # If a numeric `limit` is provided, downstream code will use it to bound the result set.
 
     attendance_query = {}
     if employee_ids:
@@ -175,17 +165,19 @@ async def _gather_report_data(db, department_filter: str, limit: int = MAX_REPOR
     if employee_ids:
         payroll_query["EmpID"] = {"$in": employee_ids}
 
+    # Respect an optional numeric limit; if no limit provided, retrieve all matching records.
+    payroll_length = None if not limit else int(limit)
     payroll_records = await db.payroll.find(
         payroll_query,
         {"_id": 0, "NetSalary": 1, "OvertimePay": 1}
-    ).to_list(length=min(limit, 5000))
+    ).to_list(length=payroll_length)
 
     payroll_total = sum(float(record.get("NetSalary", 0) or 0) for record in payroll_records)
     overtime_total = sum(float(record.get("OvertimePay", 0) or 0) for record in payroll_records)
 
     # Rows: select a useful set of fields from employees matching the query
     employee_fields = {"_id": 0, "EmpID": 1, "EmployeeName": 1, "Department": 1, "JobRole": 1, "MonthlyIncome": 1, "YearsAtCompany": 1}
-    employee_rows = await db.employees.find(employee_query, employee_fields).to_list(length=limit)
+    employee_rows = await db.employees.find(employee_query, employee_fields).to_list(length=payroll_length)
 
     summary = {
         "reportName": f"Workforce Summary ({department_filter})",
@@ -236,10 +228,10 @@ async def generate_report(request: Request, payload: ReportFilter):
     rows = []
     actor = auth_user.get("userId") or auth_user.get("email") or auth_user.get("empId") or "HR_ADMIN"
 
+    # Treat 'All' department CSV/JSON exports as streamable (no hard size threshold).
     is_large_all_request = (
         (department_filter or '').lower() == 'all'
         and export_format in {"CSV", "JSON"}
-        and int(limit or 0) >= MAX_REPORT_EXPORT_ROWS
     )
 
     if is_large_all_request:

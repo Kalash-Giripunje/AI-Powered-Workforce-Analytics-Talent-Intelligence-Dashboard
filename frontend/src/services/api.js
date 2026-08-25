@@ -32,35 +32,36 @@ const apiClient = axios.create({
 export async function downloadFileByUrl(downloadUrl, opts = {}) {
   if (!downloadUrl) throw new Error('downloadUrl is required');
 
-  // If downloadUrl is absolute (http/https), request it directly.
+  // If downloadUrl is absolute (http/https), request it directly using apiClient
+  // so interceptors (auth) are preserved.
   if (/^https?:\/\//i.test(downloadUrl)) {
     return apiClient.get(downloadUrl, { responseType: 'blob', ...opts });
   }
 
-  // If downloadUrl starts with a slash, it may be returned as '/reports/download...'
-  // or '/api/reports/download...'. Construct the final URL carefully to avoid
-  // duplicating the api prefix.
+  // If downloadUrl is relative, ensure the Authorization header is attached when
+  // using axios to perform an absolute-path request. Prefer apiClient when possible
+  // but avoid duplicating a baseURL segment (e.g., '/api' + '/api/...').
   const base = (apiClient.defaults && apiClient.defaults.baseURL) ? String(apiClient.defaults.baseURL).replace(/\/+$/, '') : '';
+  const token = getStoredAuthToken();
 
-  // If the returned URL already contains the base path (e.g., '/api/reports/...')
-  // prefer requesting it as an absolute path from the browser origin. Using an
-  // empty baseURL with axios makes a request to the origin + path which matches
-  // how a browser would request the backend.
-  if (downloadUrl.startsWith(base)) {
-    // downloadUrl already includes base (rare). Request directly by absolute path.
-    return axios.get(downloadUrl, { responseType: 'blob', ...opts });
+  // Helper to attach token to axios calls for same-origin absolute paths
+  const axiosWithAuth = (url) => axios.get(url, { responseType: 'blob', headers: { ...(opts.headers || {}), ...(token ? { Authorization: 'Bearer ' + token } : {}) }, ...opts });
+
+  // If the returned URL already contains the base path (e.g., '/api/reports/...'),
+  // request by absolute path and include auth header via axiosWithAuth.
+  if (base && downloadUrl.startsWith(base)) {
+    return axiosWithAuth(downloadUrl);
   }
 
-  // If downloadUrl starts with '/api', request it as an absolute path so the browser
-  // origin + path is used (works for same-origin backends). Otherwise, prepend the
-  // apiClient baseURL so host+api path are honored.
+  // If downloadUrl starts with '/api', request it as an absolute path on the origin
+  // and include the Authorization header.
   if (downloadUrl.startsWith('/api')) {
-    return axios.get(downloadUrl, { responseType: 'blob', ...opts });
+    return axiosWithAuth(downloadUrl);
   }
 
-  // Otherwise, assemble final URL from apiClient baseURL + downloadUrl.
+  // Otherwise, assemble final URL from apiClient baseURL + downloadUrl and request via axiosWithAuth
   const assembled = `${base}${downloadUrl.startsWith('/') ? '' : '/'}${downloadUrl}`;
-  return axios.get(assembled, { responseType: 'blob', ...opts });
+  return axiosWithAuth(assembled);
 }
 
 export function getStoredAuthToken() {
@@ -109,12 +110,56 @@ apiClient.interceptors.response.use(
   }
 );
 
+export async function downloadAndSave(downloadUrl, filename, opts = {}) {
+  if (!downloadUrl) throw new Error('downloadUrl is required');
+  const base = (apiClient.defaults && apiClient.defaults.baseURL) ? String(apiClient.defaults.baseURL).replace(/\/+$/, '') : '';
+  const token = getStoredAuthToken();
+
+  // Build an axios request with the Authorization header to ensure protected endpoints succeed
+  const axiosOptions = {
+    responseType: 'blob',
+    headers: {
+      ...(opts.headers || {}),
+      ...(token ? { Authorization: 'Bearer ' + token } : {}),
+    },
+    timeout: opts.timeout || 120000,
+  };
+
+  const resolveUrl = (url) => {
+    if (/^https?:\/\//i.test(url)) return url;
+    // If url already contains base (e.g., '/api/reports/...') and base is '/api', request absolute path on origin
+    if (base && url.startsWith(base)) return url;
+    if (url.startsWith('/api')) return url;
+    return `${base}${url.startsWith('/') ? '' : '/'}${url}`;
+  };
+
+  const finalUrl = resolveUrl(downloadUrl);
+
+  const response = await axios.get(finalUrl, axiosOptions);
+  if (!response || !response.data) throw new Error('Empty response from download endpoint');
+
+  const contentType = (response.headers && (response.headers['content-type'] || response.headers['Content-Type'])) || 'application/octet-stream';
+  const blob = new Blob([response.data], { type: contentType });
+  if (!blob || (typeof blob.size === 'number' && blob.size === 0)) throw new Error('Empty file received');
+
+  const objectUrl = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = filename || 'download';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(objectUrl);
+
+  return { success: true, size: blob.size, contentType };
+}
+
 export const api = {
   // Auth
   login: (data) => apiClient.post('/auth/login', data),
   logout: () => apiClient.post('/auth/logout'),
   getCurrentUser: () => apiClient.get('/auth/me'),
-
+  
   // Health
   getHealth: () => apiClient.get('/health'),
 
