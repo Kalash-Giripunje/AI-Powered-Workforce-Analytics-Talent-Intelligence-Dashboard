@@ -364,11 +364,13 @@ async def download_report(
     # Determine if this is a large all-department streaming request. If so, skip the
     # in-memory data gathering step that would otherwise enforce record limits.
     actor = auth_user.get("userId") or auth_user.get("email") or auth_user.get("empId") or "HR_ADMIN"
-    is_large_all_stream = (department_filter.lower() == 'all' and fmt in {"CSV", "JSON"} and final_limit >= MAX_REPORT_EXPORT_ROWS)
+    # For department=All and streamable formats (CSV/JSON) use the streaming branch
+    # which iterates the DB cursor and avoids materializing all rows in memory.
+    is_large_all_stream = (department_filter.lower() == 'all' and fmt in {"CSV", "JSON"})
 
     if is_large_all_stream:
         # We'll compute lightweight summary metrics in the streaming branch below without
-        # calling _gather_report_data which enforces the per-request limit.
+        # calling _gather_report_data which may materialize rows.
         summary = None
         rows = []
     else:
@@ -415,7 +417,9 @@ async def download_report(
         filename_base = f"{safe_report_name}-{timestamp}"
 
         employee_fields = {"_id": 0, "EmpID": 1, "EmployeeName": 1, "Department": 1, "JobRole": 1, "MonthlyIncome": 1, "YearsAtCompany": 1}
-        cursor = db.employees.find({}, employee_fields).limit(final_limit)
+        cursor = db.employees.find({}, employee_fields)
+        if final_limit is not None:
+            cursor = cursor.limit(final_limit)
 
         if fmt == "CSV":
             async def csv_generator():
