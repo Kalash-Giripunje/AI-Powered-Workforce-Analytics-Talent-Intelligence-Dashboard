@@ -284,8 +284,11 @@ async def generate_report(request: Request, payload: ReportFilter):
         "department": department_filter,
         "dateRange": date_range,
         "format": export_format,
-        "limit": str(limit),
     }
+    # Only include limit when explicitly provided (avoid literal 'None' in URLs)
+    if limit is not None:
+        q["limit"] = str(limit)
+
     query_string = urllib.parse.urlencode(q)
 
     # Return a fully-prefixed API download URL so frontends mounting under /api can call it directly

@@ -217,20 +217,11 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
       return;
     }
 
-    // Normalize department values to match backend canonical names
-    const departmentNormalization = {
-      'Product Mgmt': 'Product Management',
-      'ALL': 'All',
-      'All Departments': 'All',
-      'Finance & Payroll': 'Finance & Payroll',
-      'Human Resources': 'Human Resources',
-      'Operations': 'Operations',
-      'Engineering': 'Engineering'
-    };
-
-    const normalizedDept = (selectedDept === 'ALL')
-      ? 'All'
-      : (departmentNormalization[selectedDept] || selectedDept);
+    // Use the exact department token selected by the UI as the backend expects the
+    // Department field values to match the employees collection. Do not translate
+    // 'Product Mgmt' -> 'Product Management' here; the option 'value' already carries
+    // the canonical token used by the database. Only map the ALL sentinel to 'All'.
+    const normalizedDept = (selectedDept === 'ALL') ? 'All' : selectedDept;
 
     const payload = {
       department: normalizedDept,

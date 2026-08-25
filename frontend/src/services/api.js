@@ -1,4 +1,4 @@
-import axios from 'axios';
+﻿import axios from 'axios';
 
 const AUTH_TOKEN_KEY = 'nexus_hrms_auth_token';
 const AUTH_USER_KEY = 'nexus_hrms_auth_user';
@@ -110,51 +110,89 @@ apiClient.interceptors.response.use(
   }
 );
 
-export async function downloadAndSave(downloadUrl, filename, opts = {}) {
+export async function downloadAndSave(downloadUrl, filename = "report-download", opts = {}) {
   if (!downloadUrl) throw new Error('downloadUrl is required');
-  const base = (apiClient.defaults && apiClient.defaults.baseURL) ? String(apiClient.defaults.baseURL).replace(/\/+$/, '') : '';
-  const token = getStoredAuthToken();
 
-  // Build an axios request with the Authorization header to ensure protected endpoints succeed
-  const axiosOptions = {
-    responseType: 'blob',
-    headers: {
-      ...(opts.headers || {}),
-      ...(token ? { Authorization: 'Bearer ' + token } : {}),
-    },
-    timeout: opts.timeout || 120000,
-  };
+  try {
+    const token = getStoredAuthToken();
+    let finalUrl = downloadUrl;
 
-  const resolveUrl = (url) => {
-    if (/^https?:\/\//i.test(url)) return url;
-    // If url already contains base (e.g., '/api/reports/...') and base is '/api', request absolute path on origin
-    if (base && url.startsWith(base)) return url;
-    if (url.startsWith('/api')) return url;
-    return `${base}${url.startsWith('/') ? '' : '/'}${url}`;
-  };
+    if (!/^https?:\/\//i.test(downloadUrl)) {
+      const configuredBase = String(API_BASE_URL || '/api').replace(/\/+$/, '');
+      if (/^https?:\/\//i.test(configuredBase)) {
+        const backendOrigin = new URL(configuredBase).origin;
+        if (downloadUrl.startsWith('/api/')) {
+          finalUrl = `${backendOrigin}${downloadUrl}`;
+        } else {
+          finalUrl = `${configuredBase}${downloadUrl.startsWith('/') ? '' : '/'}${downloadUrl}`;
+        }
+      } else {
+        finalUrl = downloadUrl;
+      }
+    }
 
-  const finalUrl = resolveUrl(downloadUrl);
+    console.debug('REPORT DOWNLOAD DEBUG', { downloadUrl, finalUrl, hasToken: !!token });
 
-  const response = await axios.get(finalUrl, axiosOptions);
-  if (!response || !response.data) throw new Error('Empty response from download endpoint');
+    const response = await axios.get(finalUrl, {
+      responseType: 'blob',
+      timeout: opts.timeout || 120000,
+      headers: {
+        ...(opts.headers || {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
 
-  const contentType = (response.headers && (response.headers['content-type'] || response.headers['Content-Type'])) || 'application/octet-stream';
-  const blob = new Blob([response.data], { type: contentType });
-  if (!blob || (typeof blob.size === 'number' && blob.size === 0)) throw new Error('Empty file received');
+    const contentType = String(response.headers['content-type'] || '');
 
-  const objectUrl = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = objectUrl;
-  a.download = filename || 'download';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.URL.revokeObjectURL(objectUrl);
+    if (contentType.includes('application/json')) {
+      const text = await response.data.text();
+      try {
+        const parsed = JSON.parse(text);
+        const detail = parsed?.detail || parsed?.message || JSON.stringify(parsed);
+        console.error('Server returned JSON instead of file:', detail);
+        throw new Error(detail);
+      } catch (parseErr) {
+        console.error('Failed to parse JSON error blob:', parseErr, text);
+        throw new Error(text || 'Unknown server error');
+      }
+    }
 
-  return { success: true, size: blob.size, contentType };
-}
+    if (!response.data || (response.data.size === 0)) {
+      throw new Error('The server returned an empty report file.');
+    }
 
-export const api = {
+    const blob = new Blob([response.data], { type: contentType || 'application/octet-stream' });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+    }, 2000);
+
+    return { success: true, size: blob.size, contentType };
+  } catch (error) {
+    console.error('REPORT DOWNLOAD FAILED', error);
+    if (error?.response) {
+      try {
+        const errData = error.response.data;
+        if (errData && typeof errData.text === 'function') {
+          const txt = await errData.text();
+          console.error('Server error blob text:', txt);
+        } else {
+          console.error('Server error response:', errData);
+        }
+      } catch (e) {
+        console.error('Failed to extract server error details', e);
+      }
+    }
+    throw error;
+  }
+}export const api = {
   // Auth
   login: (data) => apiClient.post('/auth/login', data),
   logout: () => apiClient.post('/auth/logout'),
