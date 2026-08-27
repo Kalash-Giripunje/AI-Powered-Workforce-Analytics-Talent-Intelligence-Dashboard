@@ -209,13 +209,7 @@ export const ReportsCenter = ({ employees = [], payroll = [], leaves = [] }) => 
   async function handleGenerateCustomReport() {
     const canonicalDateRange = normalizeReportDateRange(selectedPeriod);
 
-    const isUltraBroadScope = selectedDept === 'ALL' && selectedEmployee === 'ALL' && (canonicalDateRange.toLowerCase().includes('year') || canonicalDateRange.toLowerCase().includes('current month') || canonicalDateRange.toLowerCase().includes('quarter'));
-    if (isUltraBroadScope) {
-      const message = 'The current export scope is too large for the backend export limit. Narrow the department, employee, or date range and try again.';
-      setExportWarning(message);
-      setGenerationError(message);
-      return;
-    }
+  
 
     // Use the exact department token selected by the UI as the backend expects the
     // Department field values to match the employees collection. Do not translate

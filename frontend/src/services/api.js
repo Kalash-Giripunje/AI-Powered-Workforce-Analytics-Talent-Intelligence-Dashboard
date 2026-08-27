@@ -144,18 +144,7 @@ export async function downloadAndSave(downloadUrl, filename = "report-download",
 
     const contentType = String(response.headers['content-type'] || '');
 
-    if (contentType.includes('application/json')) {
-      const text = await response.data.text();
-      try {
-        const parsed = JSON.parse(text);
-        const detail = parsed?.detail || parsed?.message || JSON.stringify(parsed);
-        console.error('Server returned JSON instead of file:', detail);
-        throw new Error(detail);
-      } catch (parseErr) {
-        console.error('Failed to parse JSON error blob:', parseErr, text);
-        throw new Error(text || 'Unknown server error');
-      }
-    }
+    
 
     if (!response.data || (response.data.size === 0)) {
       throw new Error('The server returned an empty report file.');
