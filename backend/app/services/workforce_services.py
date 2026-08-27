@@ -2450,8 +2450,10 @@ class LeaveService:
         # ---------------------------------------------------------
         skip = (page - 1) * size
 
-        # Include MongoDB _id in results so normalize_leave can emit a canonical `id` field
-        cursor = db.leaves.find(query).skip(skip).limit(size)
+        # Include MongoDB _id in results so normalize_leave can emit a canonical `id` field.
+        # Sort newest-first: ObjectIds increase monotonically with insertion time, so newly
+        # submitted requests land on page 1 instead of being buried at the end of natural order.
+        cursor = db.leaves.find(query).sort("_id", -1).skip(skip).limit(size)
 
         items = await cursor.to_list(
             length=size
@@ -2669,10 +2671,12 @@ class ShiftService:
         # ---------------------------------------------------------
         skip = (page - 1) * size
 
+        # Sort newest-first so freshly submitted swap requests land on page 1.
+        # _id is valid as a sort key even though it is projected out of the result.
         cursor = db.shifts.find(
             query,
             {"_id": 0}
-        ).skip(skip).limit(size)
+        ).sort("_id", -1).skip(skip).limit(size)
 
         items = await cursor.to_list(
             length=size
