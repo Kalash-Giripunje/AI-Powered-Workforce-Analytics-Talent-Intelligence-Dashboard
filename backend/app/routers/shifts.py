@@ -110,8 +110,9 @@ async def update_shift_status(
 ):
     auth_user = await require_authenticated_user(request)
     role = str(auth_user.get("role") or "").upper()
-    if role not in {"HR_ADMIN", "MANAGER"}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied. Manager or HR_ADMIN permissions required.")
+    # Allow any HR-prefixed role (HR, HR_ADMIN, HR_MANAGER, etc.) or MANAGER to perform approvals
+    if not (role.startswith("HR") or role == "MANAGER"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied. Manager or HR permissions required.")
 
     if role == "MANAGER":
         db = get_database()

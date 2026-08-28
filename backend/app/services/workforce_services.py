@@ -3535,7 +3535,10 @@ class NotificationService:
             clauses.append({"EmpID": user_emp_id})
         if user_account_id:
             clauses.append({"recipientUserId": user_account_id})
-        if normalized_role in {"HR_ADMIN", "MANAGER"}:
+        # Allow any HR-prefixed role to match HR notifications (e.g. HR, HR_ADMIN, HR_MANAGER)
+        if normalized_role.startswith("HR"):
+            clauses.append({"recipientRole": {"$regex": r"^HR", "$options": "i"}})
+        elif normalized_role == "MANAGER":
             clauses.append({"recipientRole": normalized_role})
 
         if not clauses:
@@ -3558,7 +3561,8 @@ class NotificationService:
         current_role = NotificationService._normalize_role_name(role)
         recipient_role = NotificationService._normalize_role_name(notification.get("recipientRole"))
 
-        if current_role in {"HR_ADMIN", "MANAGER"} and recipient_role == current_role:
+        # HR-prefixed roles (HR, HR_ADMIN, HR_MANAGER, etc.) can access HR notifications
+        if (current_role.startswith("HR") and recipient_role.startswith("HR")) or (current_role == "MANAGER" and recipient_role == "MANAGER"):
             return True
 
         existing_emp_id = str(notification.get("EmpID") or notification.get("empId") or "").strip()
@@ -3576,8 +3580,14 @@ class NotificationService:
         db = get_database()
         if db is None:
             raise RuntimeError("MongoDB database is not connected.")
+        normalized = NotificationService._normalize_role_name(role_name)
+        if normalized.startswith("HR"):
+            # Match any HR-prefixed role in a case-insensitive way (HR, HR_ADMIN, HR_MANAGER...)
+            query = {"role": {"$regex": r"^HR", "$options": "i"}}
+        else:
+            query = {"role": {"$in": [role_name, role_name.upper(), role_name.lower(), str(role_name).title()]}}
         return await db.user_accounts.find(
-            {"role": {"$in": [role_name, role_name.upper(), role_name.lower(), str(role_name).title()]}},
+            query,
             {"_id": 0, "userId": 1, "empId": 1, "name": 1, "email": 1, "role": 1}
         ).to_list(length=None)
 

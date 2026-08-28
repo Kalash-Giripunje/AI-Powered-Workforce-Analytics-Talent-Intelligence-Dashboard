@@ -535,18 +535,21 @@ def require_role(*allowed_roles: str):
 
 
 async def require_hr_admin(request: Request) -> Dict[str, Any]:
+    """Require an HR role. Accepts HR_ADMIN and other HR-prefixed roles (e.g., HR, HR_MANAGER)."""
     auth_user = await get_authenticated_user(request)
-    if _normalize_role(auth_user.get("role")) != "HR_ADMIN":
+    role = _normalize_role(auth_user.get("role"))
+    # Allow any role that begins with 'HR' to be considered HR administrative for approval flows.
+    if not role.startswith("HR"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied. HR_ADMIN role required.",
+            detail="Access denied. HR role required.",
         )
     return auth_user
 
 
 async def get_manager_team_emp_ids(auth_user: Dict[str, Any]) -> Optional[list[str]]:
     role = _normalize_role(auth_user.get("role"))
-    if role == "HR_ADMIN":
+    if role.startswith("HR"):
         return None
 
     emp_id = str(auth_user.get("empId") or "").strip()
