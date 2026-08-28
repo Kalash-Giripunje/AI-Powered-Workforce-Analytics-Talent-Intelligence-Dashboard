@@ -51,11 +51,11 @@ async def get_shift_requests(
             size=size,
             emp_id=str(auth_user.get("empId") or "").strip() or None,
         )
-    if role == "MANAGER":
-        team_ids = await get_manager_team_emp_ids(auth_user)
-        if emp_id and str(emp_id).strip() and str(emp_id).strip() not in set(team_ids or []):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to access another employee's shift requests.")
-        return await ShiftService.get_all(status=status_filter, page=page, size=size, emp_ids=team_ids)
+    # Managers review swap requests across the whole organisation, not only their own direct
+    # reports, so they fall through to the same unscoped query HR uses. Kept in step with
+    # GET /leaves and with the approval check in PUT /{shift_id}/status.
+    if role.startswith("HR"):
+        return await ShiftService.get_all(status=status_filter, page=page, size=size, emp_id=emp_id)
     return await ShiftService.get_all(status=status_filter, page=page, size=size, emp_id=emp_id)
 
 
@@ -70,7 +70,8 @@ async def submit_shift_request(
 ):
     """Submit a shift swap or preference request."""
     auth_user = await require_authenticated_user(request)
-    if auth_user.get("role") == "EMPLOYEE":
+    role = str(auth_user.get("role") or "").upper()
+    if role == "EMPLOYEE":
         auth_emp_id = str(auth_user.get("empId") or "").strip()
         if not auth_emp_id:
             raise HTTPException(
@@ -83,11 +84,13 @@ async def submit_shift_request(
                 detail="You are not authorized to submit a shift request for another employee."
             )
         payload.empId = auth_emp_id
-    elif auth_user.get("role") == "MANAGER":
+    elif role == "MANAGER":
         auth_emp_id = str(auth_user.get("empId") or "").strip()
         team_ids = set(await get_manager_team_emp_ids(auth_user) or [])
         if not auth_emp_id or str(payload.empId or "").strip() not in team_ids:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to submit a shift request for this employee.")
+    elif role.startswith("HR"):
+        pass
 
     try:
         return await ShiftService.submit(payload, actor_user=auth_user)
@@ -114,18 +117,8 @@ async def update_shift_status(
     if not (role.startswith("HR") or role == "MANAGER"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied. Manager or HR permissions required.")
 
-    if role == "MANAGER":
-        db = get_database()
-        if db is None:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="MongoDB database is not connected.")
-        current = await db.shifts.find_one({"ShiftID": shift_id}, {"_id": 0})
-        if not current:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Shift request ID '{shift_id}' not found.")
-        team_ids = set(await get_manager_team_emp_ids(auth_user) or [])
-        emp_id = str(current.get("EmpID") or "").strip()
-        if emp_id not in team_ids:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to approve this shift request.")
-
+    # No team-membership check: managers can see every request in GET /shifts, so restricting
+    # approval to their own reports would 403 on rows their dashboard offers them.
     try:
         updated = await ShiftService.update_status(
             shift_id,

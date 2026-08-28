@@ -20,8 +20,8 @@ import { AVATAR_IDS, DEFAULT_AVATAR_ID } from '../../utils/avatars';
 function normalizeRole(value) {
   if (!value) return 'EMPLOYEE';
   const normalized = String(value).toUpperCase();
-  if (normalized.includes('MANAGER')) return 'MANAGER';
   if (normalized.includes('HR') || normalized.includes('ADMIN')) return 'HR_ADMIN';
+  if (normalized.includes('MANAGER')) return 'MANAGER';
   return 'EMPLOYEE';
 }
 

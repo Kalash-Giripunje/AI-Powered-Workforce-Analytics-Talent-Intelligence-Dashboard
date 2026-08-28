@@ -234,10 +234,18 @@ export const EmployeeAttendanceSelfService = ({
   const recentTimelineRecords = useMemo(() => {
     const items = Array.isArray(attendanceRecords) ? attendanceRecords : [];
     const todayKey = normalizeDateKey(new Date().toISOString().slice(0, 10));
-    return items.filter((r) => {
+    return items
+      .filter((r) => {
       const rk = normalizeDateKey(getRecordValue(r, ['date', 'Date', 'workDate']));
-      return rk && rk !== todayKey;
-    }).slice(0, 5);
+      const checkIn = getRecordValue(r, ['checkIn', 'CheckIn', 'checkin', 'CheckInTime']);
+      return rk && rk !== todayKey && checkIn;
+      })
+      .sort((a, b) => {
+        const left = normalizeDateKey(getRecordValue(a, ['date', 'Date', 'workDate'])) || '';
+        const right = normalizeDateKey(getRecordValue(b, ['date', 'Date', 'workDate'])) || '';
+        return right.localeCompare(left);
+      })
+      .slice(0, 5);
   }, [attendanceRecords, currentTime]);
 
   useEffect(() => {
@@ -250,7 +258,8 @@ export const EmployeeAttendanceSelfService = ({
     return items
       .filter((record) => {
         const recordEmpId = getRecordValue(record, ['empId', 'EmpID', 'EmpId', 'employeeId']);
-        return recordEmpId && employeeId && String(recordEmpId) === String(employeeId);
+        const checkIn = getRecordValue(record, ['checkIn', 'CheckIn', 'checkin', 'CheckInTime']);
+        return recordEmpId && employeeId && String(recordEmpId) === String(employeeId) && checkIn;
       })
       .sort((a, b) => {
         const aDate = getRecordValue(a, ['date', 'Date']) || '';

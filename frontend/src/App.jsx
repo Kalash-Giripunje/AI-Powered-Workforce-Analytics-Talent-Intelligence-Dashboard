@@ -1,11 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import {
-  INITIAL_ATTENDANCE,
-  INITIAL_LEAVES,
-  INITIAL_PERFORMANCE,
-  INITIAL_LEAVE_BALANCE
-} from './data/mockData';
-
 import { api, clearAuthSession, persistAuthSession } from './services/api';
 
 // Layout Components
@@ -40,8 +33,8 @@ const AUTH_USER_KEY = 'nexus_hrms_auth_user';
 function normalizeRole(value) {
   if (!value) return 'EMPLOYEE';
   const role = String(value).toUpperCase();
-  if (role.includes('MANAGER')) return 'MANAGER';
   if (role.includes('HR') || role.includes('ADMIN')) return 'HR_ADMIN';
+  if (role.includes('MANAGER')) return 'MANAGER';
   return 'EMPLOYEE';
 }
 
@@ -381,9 +374,11 @@ export function App() {
       setEmployeesError(null);
       return;
     }
-    fetchEmployees();
+    // Managers get their whole team in one page: the dashboard derives team size, attendance
+    // and leave counts from this list, so a default 50-row page would under-report a larger team.
+    fetchEmployees(isManager ? { size: 500 } : {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated, canViewTeam]);
+  }, [isAuthenticated, canViewTeam, isManager]);
 
   async function fetchEmployees(params = {}) {
     setEmployeesLoading(true);
@@ -544,12 +539,16 @@ export function App() {
     }
   }
 
+  // Refetch whenever the leave view (or the dashboard approval queue) is opened, not only at
+  // login. A manager can have the app open while an employee submits a request, and there is
+  // no polling or manual refresh anywhere, so the list would otherwise stay frozen until reload.
   useEffect(() => {
     if (!isAuthenticated) return;
+    if (activeTab !== 'leave' && activeTab !== 'dashboard') return;
     fetchLeaves();
     fetchLeaveBalance();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated]);
+  }, [isAuthenticated, activeTab]);
 
   async function fetchLeaves(params = {}) {
     setLeaveLoading(true);
@@ -590,17 +589,25 @@ export function App() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
+    if (activeTab !== 'shifts' && activeTab !== 'dashboard') return;
     fetchShifts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated]);
+  }, [isAuthenticated, activeTab]);
 
   async function fetchShifts(params = {}) {
     setShiftLoading(true);
     setShiftError(null);
     try {
-      const resp = await api.getShifts(params);
+      const finalParams = canViewTeam
+        ? params
+        : { ...params, emp_id: currentEmpId || selectedShiftEmployeeId };
+      const resp = await api.getShifts(finalParams);
       const items = Array.isArray(resp) ? resp : [];
-      setShifts(items);
+      const visible = canViewTeam ? items : items.filter((shift) => {
+        const shiftEmpId = shift?.empId || shift?.EmpID || shift?.EmpId || shift?.employeeId;
+        return shiftEmpId && String(shiftEmpId) === String(currentEmpId || selectedShiftEmployeeId);
+      });
+      setShifts(visible);
     } catch (err) {
       console.error('Failed to load shifts:', err);
       const message = err?.response?.data?.detail || err.message || 'Failed to load shifts';
@@ -612,9 +619,10 @@ export function App() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
+    if (activeTab !== 'timesheets' && activeTab !== 'dashboard') return;
     fetchTimesheets();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated]);
+  }, [isAuthenticated, activeTab]);
 
   async function fetchTimesheets(params = {}) {
     setTimesheetsLoading(true);

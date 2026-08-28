@@ -82,6 +82,27 @@ const getEmployeeStatusToday = (employeeId, attendanceRecords) => {
   return 'Present';
 };
 
+// Leave, shift and timesheet requests are visible to every manager, not only for their own
+// reports, so team membership is not re-checked against the employees list here. Only the
+// manager's own records are excluded, so nobody can approve their own request.
+const isReviewableFor = (employeeId, managerId) => {
+  const id = normalizeId(employeeId);
+  return Boolean(id) && id !== managerId;
+};
+
+// Requests can belong to employees outside this manager's team, who are therefore absent from
+// the (team-scoped) employees list. Prefer the name carried on the record, fall back to the
+// employees list, and last of all show the employee ID so the row is still identifiable.
+const resolveEmployeeLabel = (entry, employeeId, employees) => {
+  const fromRecord = entry?.empName || entry?.EmpName || entry?.employeeName || entry?.EmployeeName;
+  if (fromRecord) return fromRecord;
+  const emp = (employees || []).find((member) => {
+    const memberId = normalizeId(member?.empId || member?.EmpID || member?.EmpId || member?.employeeId);
+    return memberId === employeeId;
+  });
+  return emp?.EmployeeName || emp?.employeeName || emp?.name || employeeId || 'Employee';
+};
+
 const getPendingCount = (items, key = 'status') =>
   (items || []).filter((item) => {
     const value = String(item?.[key] || item?.Status || '').trim().toLowerCase();
@@ -150,23 +171,13 @@ export const ManagerDashboard = ({
     }).length;
   }, [directReports, leaves, todayIso]);
 
-  const directReportIds = useMemo(() => new Set((directReports || []).map((employee) => normalizeId(employee?.empId || employee?.EmpID || employee?.EmpId || employee?.employeeId))), [directReports]);
-
   const pendingApprovals = useMemo(() => {
-    const leavePending = (leaves || []).filter((entry) => {
+    const countPending = (records) => (records || []).filter((entry) => {
       const id = normalizeId(entry?.empId || entry?.EmpID || entry?.EmpId || entry?.employeeId);
-      return directReportIds.has(id) && ['pending', 'submitted'].includes(String(entry?.status || entry?.Status || '').trim().toLowerCase());
+      return isReviewableFor(id, managerId) && ['pending', 'submitted'].includes(String(entry?.status || entry?.Status || '').trim().toLowerCase());
     }).length;
-    const shiftPending = (shifts || []).filter((entry) => {
-      const id = normalizeId(entry?.empId || entry?.EmpID || entry?.EmpId || entry?.employeeId);
-      return directReportIds.has(id) && ['pending', 'submitted'].includes(String(entry?.status || entry?.Status || '').trim().toLowerCase());
-    }).length;
-    const timesheetPending = (timesheets || []).filter((entry) => {
-      const id = normalizeId(entry?.empId || entry?.EmpID || entry?.EmpId || entry?.employeeId);
-      return directReportIds.has(id) && ['pending', 'submitted'].includes(String(entry?.status || entry?.Status || '').trim().toLowerCase());
-    }).length;
-    return leavePending + shiftPending + timesheetPending;
-  }, [directReportIds, leaves, shifts, timesheets]);
+    return countPending(leaves) + countPending(shifts) + countPending(timesheets);
+  }, [managerId, leaves, shifts, timesheets]);
 
   const teamAttendanceTrend = useMemo(() => {
     const lastDays = Array.from({ length: 7 }).map((_, index) => {
@@ -223,14 +234,10 @@ export const ManagerDashboard = ({
     (leaves || []).forEach((entry) => {
       const status = String(entry?.status || entry?.Status || '').trim();
       const employeeId = normalizeId(entry?.empId || entry?.EmpID || entry?.EmpId || entry?.employeeId);
-      if (status.toLowerCase() === 'pending' && directReportIds.has(employeeId)) {
-        const emp = (employees || []).find((member) => {
-          const memberId = normalizeId(member?.empId || member?.EmpID || member?.EmpId || member?.employeeId);
-          return memberId === employeeId;
-        });
+      if (status.toLowerCase() === 'pending' && isReviewableFor(employeeId, managerId)) {
         items.push({
           type: 'Leave',
-          employee: emp?.EmployeeName || emp?.employeeName || emp?.name || 'Employee',
+          employee: resolveEmployeeLabel(entry, employeeId, employees),
           date: entry?.startDate || entry?.StartDate || '—',
           status,
           id: entry?._id || entry?.id || entry?.leaveId,
@@ -242,14 +249,10 @@ export const ManagerDashboard = ({
     (shifts || []).forEach((entry) => {
       const status = String(entry?.status || entry?.Status || '').trim();
       const employeeId = normalizeId(entry?.empId || entry?.EmpID || entry?.EmpId || entry?.employeeId);
-      if (status.toLowerCase() === 'pending' && directReportIds.has(employeeId)) {
-        const emp = (employees || []).find((member) => {
-          const memberId = normalizeId(member?.empId || member?.EmpID || member?.EmpId || member?.employeeId);
-          return memberId === employeeId;
-        });
+      if (status.toLowerCase() === 'pending' && isReviewableFor(employeeId, managerId)) {
         items.push({
           type: 'Shift',
-          employee: emp?.EmployeeName || emp?.employeeName || emp?.name || 'Employee',
+          employee: resolveEmployeeLabel(entry, employeeId, employees),
           date: entry?.shiftDate || entry?.ShiftDate || entry?.date || '—',
           status,
           id: entry?._id || entry?.id || entry?.shiftId,
@@ -261,14 +264,10 @@ export const ManagerDashboard = ({
     (timesheets || []).forEach((entry) => {
       const status = String(entry?.status || entry?.Status || '').trim();
       const employeeId = normalizeId(entry?.empId || entry?.EmpID || entry?.EmpId || entry?.employeeId);
-      if ((status.toLowerCase() === 'pending' || status.toLowerCase() === 'submitted') && directReportIds.has(employeeId)) {
-        const emp = (employees || []).find((member) => {
-          const memberId = normalizeId(member?.empId || member?.EmpID || member?.EmpId || member?.employeeId);
-          return memberId === employeeId;
-        });
+      if ((status.toLowerCase() === 'pending' || status.toLowerCase() === 'submitted') && isReviewableFor(employeeId, managerId)) {
         items.push({
           type: 'Timesheet',
-          employee: emp?.EmployeeName || emp?.employeeName || emp?.name || 'Employee',
+          employee: resolveEmployeeLabel(entry, employeeId, employees),
           date: entry?.date || entry?.Date || '—',
           status,
           id: entry?._id || entry?.id || entry?.timesheetId,
@@ -278,7 +277,7 @@ export const ManagerDashboard = ({
     });
 
     return items.slice(0, 5);
-  }, [directReportIds, employees, leaves, shifts, timesheets]);
+  }, [managerId, employees, leaves, shifts, timesheets]);
 
   const latestTeamMembers = useMemo(() => {
     return directReports.slice(0, 4).map((employee) => {

@@ -47,11 +47,9 @@ async def get_leave_requests(
             size=size,
             emp_id=str(auth_user.get("empId") or "").strip() or None,
         )
-    if role == "MANAGER":
-        team_ids = await get_manager_team_emp_ids(auth_user)
-        if emp_id and str(emp_id).strip() and str(emp_id).strip() not in set(team_ids or []):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to access another employee's leave records.")
-        return await LeaveService.get_all(status=status_filter, page=page, size=size, emp_ids=team_ids)
+    # Managers review leave across the whole organisation, not only their own direct reports, so
+    # they fall through to the same unscoped query HR uses. PUT /{leave_id}/status authorises
+    # approvals the same way, otherwise every newly visible row would 403 on approve.
     return await LeaveService.get_all(status=status_filter, page=page, size=size, emp_id=emp_id)
 
 
@@ -127,7 +125,8 @@ async def get_leave_balance(request: Request):
 async def submit_leave_request(request: Request, payload: LeaveRequestBase):
     """Submit a new leave request."""
     auth_user = await require_authenticated_user(request)
-    if auth_user.get("role") == "EMPLOYEE":
+    role = str(auth_user.get("role") or "").upper()
+    if role == "EMPLOYEE":
         auth_emp_id = str(auth_user.get("empId") or "").strip()
         if not auth_emp_id:
             raise HTTPException(
@@ -140,11 +139,13 @@ async def submit_leave_request(request: Request, payload: LeaveRequestBase):
                 detail="You are not authorized to submit leave for another employee."
             )
         payload.empId = auth_emp_id
-    elif auth_user.get("role") == "MANAGER":
+    elif role == "MANAGER":
         auth_emp_id = str(auth_user.get("empId") or "").strip()
         team_ids = set(await get_manager_team_emp_ids(auth_user) or [])
         if not auth_emp_id or str(payload.empId or "").strip() not in team_ids:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to submit leave for this employee.")
+    elif role.startswith("HR"):
+        pass
 
     try:
         return await LeaveService.submit(payload, actor_user=auth_user)
@@ -164,36 +165,13 @@ async def update_leave_status(
     """Approve or reject leave request."""
     auth_user = await require_authenticated_user(request)
     role = str(auth_user.get("role") or "").upper()
-    if role not in {"HR_ADMIN", "MANAGER"}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied. Manager or HR_ADMIN permissions required.")
+    if role == "MANAGER" or role.startswith("HR"):
+        pass
+    else:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied. Manager or HR permissions required.")
 
-    if role == "MANAGER":
-        db = get_database()
-        if db is None:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="MongoDB database is not connected.")
-
-        # First try to locate by MongoDB _id as a string, then by ObjectId, then by legacy RequestID
-        current = await db.leaves.find_one({"_id": leave_id}, {"_id": 0})
-        if not current:
-            try:
-                from bson import ObjectId
-                current = await db.leaves.find_one({"_id": ObjectId(leave_id)}, {"_id": 0})
-            except Exception:
-                current = None
-        if not current:
-            # Fallback: allow managers to reference legacy RequestID values (e.g., LR-000020)
-            try:
-                current = await db.leaves.find_one({"RequestID": leave_id}, {"_id": 0})
-            except Exception:
-                current = None
-        if not current:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Leave request ID '{leave_id}' not found.")
-
-        team_ids = set(await get_manager_team_emp_ids(auth_user) or [])
-        emp_id = str(current.get("EmpID") or "").strip()
-        if emp_id not in team_ids:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not authorized to approve this leave request.")
-
+    # No team-membership check: managers can see every request in GET /leaves, so restricting
+    # approval to their own reports would 403 on rows their dashboard offers them.
     try:
         updated = await LeaveService.update_status(
             leave_id,

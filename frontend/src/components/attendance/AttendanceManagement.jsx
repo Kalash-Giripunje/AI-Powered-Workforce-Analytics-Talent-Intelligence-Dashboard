@@ -179,7 +179,16 @@ export const AttendanceManagement = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRecord, setSelectedRecord] = useState(null);
 
-  const normalizedList = Array.isArray(attendanceRecords) ? attendanceRecords : [];
+  const normalizedList = useMemo(() => {
+    const records = Array.isArray(attendanceRecords) ? attendanceRecords : [];
+    return records
+      .filter((record) => Boolean(toText(record?.date, record?.Date, record?.workDate)))
+      .sort((left, right) => {
+        const leftDate = toText(left?.date, left?.Date, left?.workDate);
+        const rightDate = toText(right?.date, right?.Date, right?.workDate);
+        return rightDate.localeCompare(leftDate);
+      });
+  }, [attendanceRecords]);
 
   const departmentOptions = useMemo(() => {
     const values = new Set();
@@ -207,6 +216,7 @@ export const AttendanceManagement = ({
       const department = getDepartment(record).toLowerCase();
       const recordDate = toText(record?.date, record?.Date).toLowerCase();
       const status = getAttendanceStatus(record);
+      const hasAttendance = Boolean(toText(record?.checkIn, record?.CheckIn, record?.checkin, record?.CheckInTime));
 
       const matchesSearch =
         !query ||
@@ -220,9 +230,37 @@ export const AttendanceManagement = ({
       const matchesStart = !startDate || recordDate >= startDate;
       const matchesEnd = !endDate || recordDate <= endDate;
 
-      return matchesSearch && matchesDepartment && matchesStatus && matchesStart && matchesEnd;
+      return hasAttendance && matchesSearch && matchesDepartment && matchesStatus && matchesStart && matchesEnd;
     });
   }, [normalizedList, employees, searchQuery, attendanceFilters]);
+
+  const metricsTodayKey = toISODateLocal(new Date());
+  const todayRecords = useMemo(
+    () => filteredRecords.filter((record) => {
+      const recordDate = toText(record?.date, record?.Date, record?.workDate).slice(0, 10);
+      return recordDate === metricsTodayKey;
+    }),
+    [filteredRecords, metricsTodayKey]
+  );
+
+  const uniqueTodayRecords = useMemo(() => {
+    const byEmployee = new Map();
+    todayRecords.forEach((record) => {
+      const employeeId = getEmployeeId(record);
+      if (!employeeId) return;
+      const current = byEmployee.get(employeeId);
+      if (!current) {
+        byEmployee.set(employeeId, record);
+        return;
+      }
+      // Prefer the most actionable status when duplicate same-day records exist.
+      const priority = { Late: 3, Working: 2, Present: 1 };
+      if ((priority[getAttendanceStatus(record)] || 0) > (priority[getAttendanceStatus(current)] || 0)) {
+        byEmployee.set(employeeId, record);
+      }
+    });
+    return Array.from(byEmployee.values());
+  }, [todayRecords]);
 
   const totalEmployeeCount = useMemo(() => {
     const activeEmployees = (employees || []).filter((employee) => {
@@ -240,19 +278,19 @@ export const AttendanceManagement = ({
   }, [employees, attendancePagination, normalizedList]);
 
   const presentCount = useMemo(
-    () => filteredRecords.filter((record) => ['Present', 'Working'].includes(getAttendanceStatus(record))).length,
-    [filteredRecords]
+    () => uniqueTodayRecords.filter((record) => getAttendanceStatus(record) === 'Present').length,
+    [uniqueTodayRecords]
   );
   const lateCount = useMemo(
-    () => filteredRecords.filter((record) => getAttendanceStatus(record) === 'Late').length,
-    [filteredRecords]
+    () => uniqueTodayRecords.filter((record) => getAttendanceStatus(record) === 'Late').length,
+    [uniqueTodayRecords]
   );
-  const absentCount = Math.max(0, totalEmployeeCount - presentCount);
-  const workingCount = filteredRecords.filter((record) => getAttendanceStatus(record) === 'Working').length;
-  const attendanceRate = totalEmployeeCount > 0 ? (presentCount / totalEmployeeCount) * 100 : 0;
+  const workingCount = uniqueTodayRecords.filter((record) => getAttendanceStatus(record) === 'Working').length;
+  const absentCount = Math.max(0, totalEmployeeCount - presentCount - workingCount - lateCount);
+  const attendanceRate = totalEmployeeCount > 0 ? ((presentCount + workingCount + lateCount) / totalEmployeeCount) * 100 : 0;
   const attendanceRateText = `${Math.min(100, Math.max(0, attendanceRate)).toFixed(0)}%`;
 
-  const checkInCompletionRate = totalEmployeeCount > 0 ? ((presentCount + lateCount) / totalEmployeeCount) * 100 : 0;
+  const checkInCompletionRate = attendanceRate;
   const reviewQueueCount = Math.max(0, absentCount + lateCount); 
 
   const chartData = [
@@ -311,14 +349,14 @@ export const AttendanceManagement = ({
   const maxDeptValue = Math.max(...departmentData.map((item) => item.value), 1);
 
   const automationSignals = useMemo(() => {
-    const anomalies = normalizedList.filter((record) => record?.isAnomaly || record?.anomalyReason || record?.AnomalyReason);
+    const anomalies = uniqueTodayRecords.filter((record) => record?.isAnomaly || record?.anomalyReason || record?.AnomalyReason || getAttendanceStatus(record) === 'Late');
     return anomalies.slice(0, 3).map((record) => ({
       title: 'Attendance anomaly',
       tag: 'AI',
       tone: 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300',
       message: toText(record?.anomalyReason, record?.AnomalyReason, `${getEmployeeName(record, employees)} requires review for irregular check-in or check-out behavior.`),
     }));
-  }, [normalizedList, employees]);
+  }, [uniqueTodayRecords, employees]);
 
   const metrics = [
     { label: 'Total Employees', value: totalEmployeeCount, delta: 'Live', accent: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300', icon: <Users className="h-4 w-4" /> },

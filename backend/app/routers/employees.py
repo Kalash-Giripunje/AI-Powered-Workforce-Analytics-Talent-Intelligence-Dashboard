@@ -85,7 +85,7 @@ async def get_employees(
     """
     auth_user = await require_authenticated_user(request)
     role = str(auth_user.get("role") or "").upper()
-    if role == "HR_ADMIN":
+    if role.startswith("HR"):
         items, total = await EmployeeService.get_all(
             department=department,
             status=status_filter,

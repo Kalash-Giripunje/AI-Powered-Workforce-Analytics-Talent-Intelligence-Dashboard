@@ -584,7 +584,7 @@ async def require_employee_self_or_hr(
 ) -> Dict[str, Any]:
     auth_user = await get_authenticated_user(request)
     role = _normalize_role(auth_user.get("role"))
-    if role == "HR_ADMIN":
+    if role.startswith("HR"):
         return auth_user
 
     auth_emp_id = str(auth_user.get("empId") or "").strip()

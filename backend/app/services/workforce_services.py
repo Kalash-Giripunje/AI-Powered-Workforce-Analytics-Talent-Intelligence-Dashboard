@@ -1491,12 +1491,11 @@ class AttendanceService:
 
         total_employees = await db.employees.count_documents(employee_query)
 
-        skip = (page - 1) * size
-        employee_cursor = db.employees.find(
-            employee_query,
-            {"_id": 0}
-        ).skip(skip).limit(size)
-        employee_docs = await employee_cursor.to_list(length=size)
+        # Attendance history must be driven by actual MongoDB attendance documents.
+        # Do not create synthetic absent rows: the attendance page is a record of
+        # days an employee actually attended.
+        employee_cursor = db.employees.find(employee_query, {"_id": 0})
+        employee_docs = await employee_cursor.to_list(length=None)
 
         if not employee_docs:
             empty_summary = AttendanceService._build_summary([], total_employees, start_date, end_date, date)
@@ -1512,7 +1511,14 @@ class AttendanceService:
                 employee_lookup[emp_id] = normalize_employee(emp)
                 emp_ids.append(emp_id)
 
-        attendance_query: Dict[str, Any] = {"EmpID": {"$in": emp_ids}}
+        attendance_query: Dict[str, Any] = {
+            "EmpID": {"$in": emp_ids},
+            "$or": [
+                {"CheckIn": {"$exists": True, "$ne": None}},
+                {"CheckInTime": {"$exists": True, "$ne": None}},
+                {"checkIn": {"$exists": True, "$ne": None}},
+            ],
+        }
         if start_date or end_date:
             date_filter: Dict[str, Any] = {}
             if start_date:
@@ -1535,50 +1541,32 @@ class AttendanceService:
         cursor = db.attendance.find(attendance_query, {"_id": 0})
         attendance_documents = await cursor.to_list(length=None)
 
-        attendance_lookup: Dict[str, Dict[str, Any]] = {}
-        for a in attendance_documents:
-            aid = a.get("EmpID")
-            if aid:
-                attendance_lookup[aid] = a
+        # Keep every attendance day and sort newest-first. Mongo documents can use
+        # either Date or date depending on when they were created.
+        def attendance_sort_key(document: Dict[str, Any]) -> str:
+            return str(document.get("Date") or document.get("date") or "")[:10]
 
-        merged_items: List[Dict[str, Any]] = []
-        target_date = AttendanceBusinessDayService._normalize_iso_date(date) or (datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-
-        for emp in employee_docs:
-            eid = emp.get("EmpID")
-            emp_norm = employee_lookup.get(eid)
-            att_doc = attendance_lookup.get(eid)
-            if att_doc:
-                merged_items.append(normalize_attendance(att_doc, emp_norm))
-                continue
-
-            if date and AttendanceBusinessDayService.is_holiday(target_date):
-                continue
-            if date and AttendanceBusinessDayService.is_weekly_off(target_date):
-                continue
-
-            synthetic = {
-                "EmpID": eid,
-                "Date": target_date,
-                "CheckIn": None,
-                "CheckOut": None,
-                "WorkingHours": 0,
-                "AttendanceStatus": "Absent",
-            }
-            merged_items.append(normalize_attendance(synthetic, emp_norm))
+        attendance_documents.sort(key=attendance_sort_key, reverse=True)
+        merged_items = [
+            normalize_attendance(document, employee_lookup.get(document.get("EmpID")))
+            for document in attendance_documents
+        ]
 
         if status and status.lower() != "all":
-            filtered = []
-            for item in merged_items:
-                item_status = (item.get("status") or item.get("AttendanceStatus") or "").strip()
-                if item_status.lower() == status.lower():
-                    filtered.append(item)
-            merged_items = filtered
+            merged_items = [
+                item for item in merged_items
+                if str(item.get("status") or item.get("AttendanceStatus") or "").strip().lower() == status.lower()
+            ]
 
-        summary = AttendanceService._build_summary(merged_items, total_employees, start_date, end_date, date)
+        total_records = len(merged_items)
+        summary_items = merged_items
+        skip = (page - 1) * size
+        merged_items = merged_items[skip:skip + size]
+
+        summary = AttendanceService._build_summary(summary_items, total_employees, start_date, end_date, date)
         if include_summary:
-            return merged_items, total_employees, summary
-        return merged_items, total_employees
+            return merged_items, total_records, summary
+        return merged_items, total_records
 
     @staticmethod
     def _build_summary(
