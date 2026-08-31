@@ -165,6 +165,7 @@ export const AttendanceManagement = ({
   attendanceLoading = false,
   attendanceError = null,
   attendancePagination = null,
+  attendanceSummary = null,
   employees = [],
   holidays = [],
   holidaysLoading = false,
@@ -263,11 +264,8 @@ export const AttendanceManagement = ({
   }, [todayRecords]);
 
   const totalEmployeeCount = useMemo(() => {
-    const activeEmployees = (employees || []).filter((employee) => {
-      const status = toText(employee?.status, employee?.EmploymentStatus, employee?.employmentStatus).toLowerCase();
-      return status === 'active';
-    });
-    if (activeEmployees.length > 0) return activeEmployees.length;
+    const employeeList = Array.isArray(employees) ? employees : [];
+    if (employeeList.length > 0) return employeeList.length;
     if (attendancePagination && Number.isFinite(attendancePagination.total)) return attendancePagination.total;
     const uniqueIds = new Set();
     normalizedList.forEach((record) => {
@@ -277,15 +275,34 @@ export const AttendanceManagement = ({
     return uniqueIds.size || normalizedList.length || 0;
   }, [employees, attendancePagination, normalizedList]);
 
+  // The server rollup is computed over the entire filtered result set. The page-derived counts
+  // below only see the rows the table requested (50 by default), which is less than a single day
+  // for a mid-sized team, so they under-report. Prefer the rollup, and fall back to the page when
+  // it is missing or when a client-side search is narrowing the view: the server cannot know
+  // about the search box, so letting it answer then would ignore the user's filter.
+  const summaryToday = useMemo(() => {
+    if (searchQuery.trim()) return null;
+    const today = attendanceSummary?.today;
+    if (!today || typeof today.attended !== 'number') return null;
+    return today;
+  }, [attendanceSummary, searchQuery]);
+
   const presentCount = useMemo(
-    () => uniqueTodayRecords.filter((record) => getAttendanceStatus(record) === 'Present').length,
-    [uniqueTodayRecords]
+    () => (summaryToday
+      // The rollup counts late arrivals inside `present`; the cards show them separately.
+      ? Math.max(0, (summaryToday.present || 0) - (summaryToday.late || 0))
+      : uniqueTodayRecords.filter((record) => getAttendanceStatus(record) === 'Present').length),
+    [summaryToday, uniqueTodayRecords]
   );
   const lateCount = useMemo(
-    () => uniqueTodayRecords.filter((record) => getAttendanceStatus(record) === 'Late').length,
-    [uniqueTodayRecords]
+    () => (summaryToday
+      ? (summaryToday.late || 0)
+      : uniqueTodayRecords.filter((record) => getAttendanceStatus(record) === 'Late').length),
+    [summaryToday, uniqueTodayRecords]
   );
-  const workingCount = uniqueTodayRecords.filter((record) => getAttendanceStatus(record) === 'Working').length;
+  const workingCount = summaryToday
+    ? (summaryToday.currentlyWorking || 0)
+    : uniqueTodayRecords.filter((record) => getAttendanceStatus(record) === 'Working').length;
   const absentCount = Math.max(0, totalEmployeeCount - presentCount - workingCount - lateCount);
   const attendanceRate = totalEmployeeCount > 0 ? ((presentCount + workingCount + lateCount) / totalEmployeeCount) * 100 : 0;
   const attendanceRateText = `${Math.min(100, Math.max(0, attendanceRate)).toFixed(0)}%`;
@@ -313,6 +330,27 @@ export const AttendanceManagement = ({
   })();
 
   const trendData = useMemo(() => {
+    const formatLabel = (date) => {
+      const parsed = new Date(`${String(date).slice(0, 10)}T00:00:00`);
+      if (Number.isNaN(parsed.getTime())) return String(date);
+      return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    };
+
+    // Prefer the server's per-day rollup: it spans every attendance day in the filtered set,
+    // whereas the page fallback below can only ever see the newest 50 records.
+    const serverTrend = Array.isArray(attendanceSummary?.dailyTrend) ? attendanceSummary.dailyTrend : null;
+    if (serverTrend && serverTrend.length > 0 && !searchQuery.trim()) {
+      return serverTrend
+        .slice(-7)
+        .map((point) => ({
+          label: formatLabel(point?.date),
+          value: Number(point?.attended) || 0,
+          present: Number(point?.present) || 0,
+          late: Number(point?.late) || 0,
+          working: Number(point?.working) || 0,
+        }));
+    }
+
     const counts = new Map();
     normalizedList.forEach((record) => {
       const date = toText(record?.date, record?.Date);
@@ -327,14 +365,23 @@ export const AttendanceManagement = ({
       .sort(([a], [b]) => new Date(a) - new Date(b))
       .slice(-7)
       .map(([date, value]) => ({
-        label: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        label: formatLabel(date),
         value,
       }));
-  }, [normalizedList]);
+  }, [normalizedList, attendanceSummary, searchQuery]);
 
   const maxTrendValue = Math.max(...trendData.map((point) => point.value), 1);
 
   const departmentData = useMemo(() => {
+    // Same reasoning as the trend: the server counts every record in the filtered set, the page
+    // fallback only the rows currently loaded.
+    const serverMix = Array.isArray(attendanceSummary?.departmentBreakdown) ? attendanceSummary.departmentBreakdown : null;
+    if (serverMix && serverMix.length > 0 && !searchQuery.trim()) {
+      return serverMix
+        .slice(0, 5)
+        .map((entry) => ({ label: toText(entry?.department) || 'Unassigned', value: Number(entry?.count) || 0 }));
+    }
+
     const counts = new Map();
     normalizedList.forEach((record) => {
       const department = getDepartment(record);
@@ -344,7 +391,7 @@ export const AttendanceManagement = ({
       .map(([label, value]) => ({ label, value }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 5);
-  }, [normalizedList]);
+  }, [normalizedList, attendanceSummary, searchQuery]);
 
   const maxDeptValue = Math.max(...departmentData.map((item) => item.value), 1);
 
@@ -674,13 +721,36 @@ export const AttendanceManagement = ({
             </div>
 
             {trendData.length > 0 ? (
-              <div className="flex h-40 items-end gap-2 overflow-hidden">
-                {trendData.map((point) => (
-                  <div key={point.label} className="flex flex-1 flex-col items-center justify-end gap-2">
-                    <div className="w-full rounded-t-2xl bg-gradient-to-t from-indigo-600 to-indigo-300" style={{ height: `${Math.max(18, (point.value / maxTrendValue) * 100)}%` }} />
-                    <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">{point.label}</div>
-                  </div>
-                ))}
+              <div className="flex h-40 items-stretch gap-2">
+                {trendData.map((point) => {
+                  const percent = maxTrendValue > 0 ? (point.value / maxTrendValue) * 100 : 0;
+                  const breakdown = [
+                    point.present !== undefined ? `${point.present} present` : null,
+                    point.late ? `${point.late} late` : null,
+                    point.working ? `${point.working} currently working` : null,
+                  ].filter(Boolean).join(' · ');
+                  return (
+                    <div key={point.label} className="flex flex-1 flex-col items-center gap-2">
+                      <div className="text-[10px] font-bold text-slate-600 dark:text-slate-300">{point.value}</div>
+                      {/* The track must be flex-1 inside a fixed-height column: a percentage height
+                          only resolves against a definite parent height, so without it the bar
+                          collapses to nothing and the chart renders as bare axis labels. */}
+                      <div className="flex w-full flex-1 items-end" title={breakdown ? `${point.label}: ${breakdown}` : `${point.label}: ${point.value} attended`}>
+                        {point.value > 0 ? (
+                          <div
+                            className="w-full rounded-t-2xl bg-gradient-to-t from-indigo-600 to-indigo-300"
+                            style={{ height: `${Math.max(6, percent)}%` }}
+                          />
+                        ) : (
+                          // A zero day gets a flat baseline rather than a floor-height bar, so it
+                          // reads as "nobody attended" instead of a small non-zero value.
+                          <div className="h-[3px] w-full rounded-full bg-slate-200 dark:bg-slate-700" />
+                        )}
+                      </div>
+                      <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">{point.label}</div>
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <div className="flex h-40 items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-950/60 dark:text-slate-400">

@@ -143,6 +143,9 @@ export function App() {
   const [attendanceLoading, setAttendanceLoading] = useState(false);
   const [attendanceError, setAttendanceError] = useState(null);
   const [attendancePagination, setAttendancePagination] = useState({ total: 0, page: 1, size: 50, pages: 1 });
+  // Server-side rollups (daily trend, department mix, today's live counts) computed over the whole
+  // filtered set instead of the 50-row page the table shows.
+  const [attendanceSummary, setAttendanceSummary] = useState(null);
   const [attendanceFilters, setAttendanceFilters] = useState({
     department: 'ALL',
     employeeId: '',
@@ -174,6 +177,7 @@ export function App() {
 
   const resetEmployeeScopedData = () => {
     setAttendance([]);
+    setAttendanceSummary(null);
     setLeaves([]);
     setShifts([]);
     setTimesheets([]);
@@ -404,12 +408,16 @@ export function App() {
     }
   }
 
-  // Fetch attendance from API (read-only integration)
+  // Fetch attendance from API (read-only integration). activeTab is a dependency so opening any
+  // view that reads attendance pulls fresh punches: without it an open session keeps showing the
+  // counts from login, and a colleague checking in never appears.
+  const ATTENDANCE_TABS = ['attendance', 'dashboard', 'profile', 'ai_planning'];
   useEffect(() => {
     if (!isAuthenticated) return;
+    if (!ATTENDANCE_TABS.includes(activeTab)) return;
     fetchAttendance(attendanceFilters);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated, attendanceFilters.department, attendanceFilters.employeeId, attendanceFilters.status, attendanceFilters.startDate, attendanceFilters.endDate]);
+  }, [isAuthenticated, activeTab, attendanceFilters.department, attendanceFilters.employeeId, attendanceFilters.status, attendanceFilters.startDate, attendanceFilters.endDate]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -522,6 +530,7 @@ export function App() {
         pages: (resp && typeof resp.pages === 'number') ? resp.pages : (Math.ceil(((resp && resp.total) || 0) / (params.size || 50)))
       };
       setAttendancePagination(pagination);
+      setAttendanceSummary(resp && resp.summary ? resp.summary : null);
 
       const visibleItems = canViewTeam ? items : (items || []).filter((r) => {
         const rid = r?.empId || r?.EmpID || r?.EmpId || r?.employeeId || null;
@@ -1264,6 +1273,7 @@ export function App() {
               attendanceLoading={attendanceLoading}
               attendanceError={attendanceError}
               attendancePagination={attendancePagination}
+              attendanceSummary={attendanceSummary}
               employees={employees}
               selectedEmployeeId={selectedAttendanceEmployeeId}
               currentEmpId={currentEmpId}

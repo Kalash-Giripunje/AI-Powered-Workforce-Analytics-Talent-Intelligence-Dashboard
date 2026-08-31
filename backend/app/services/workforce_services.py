@@ -1593,6 +1593,19 @@ class AttendanceService:
         late_count = 0
         currently_working = 0
         checked_out = 0
+
+        # Per-day, per-department and today rollups are built from the FULL filtered result set,
+        # not the requested page. The page is 50 rows by default, which is less than a single day
+        # for a mid-sized team, so anything derived from the page alone under-reports badly.
+        # Ranked so a duplicate same-day record resolves to its most actionable status.
+        status_rank = {"present": 1, "working": 2, "currently working": 2, "late": 3}
+        daily: Dict[str, Dict[str, int]] = {}
+        department_counts: Dict[str, int] = {}
+        # datetime.now() (server local), not UTC: that is what check_in stamps into Date, so the
+        # comparison has to use the same clock or today's records never match.
+        today_key = datetime.now().strftime("%Y-%m-%d")
+        today_by_employee: Dict[str, str] = {}
+
         for item in merged_items:
             item_status = str(item.get("status") or item.get("AttendanceStatus") or "").strip().lower()
             check_in = item.get("checkIn") or item.get("CheckIn")
@@ -1608,6 +1621,69 @@ class AttendanceService:
                 currently_working += 1
             if check_out:
                 checked_out += 1
+
+            # Mirror the status aliases the attendance table resolves on the client, including the
+            # LateArrival flag, so the rollups can never disagree with the rows they summarise.
+            if item.get("LateArrival") is True or item.get("lateArrival") is True or item_status == "late":
+                effective = "late"
+            elif item_status in {"present", "checked out", "day completed", "complete"}:
+                effective = "present"
+            elif item_status in {"working", "currently working", "in progress"}:
+                effective = "working"
+            elif item_status in {"absent", "not checked in", "no show", "no-show"}:
+                effective = ""
+            elif check_in:
+                effective = "present" if check_out else "working"
+            else:
+                effective = ""
+            if not effective:
+                continue
+
+            day = str(item.get("date") or item.get("Date") or "")[:10]
+            if day:
+                bucket = daily.setdefault(day, {"present": 0, "late": 0, "working": 0, "attended": 0})
+                if effective == "late":
+                    bucket["late"] += 1
+                    bucket["present"] += 1
+                elif effective == "present":
+                    bucket["present"] += 1
+                else:
+                    bucket["working"] += 1
+                bucket["attended"] += 1
+
+            department = str(item.get("department") or item.get("Department") or "").strip()
+            if department and department.lower() != "unassigned":
+                department_counts[department] = department_counts.get(department, 0) + 1
+
+            if day == today_key:
+                emp_key = str(item.get("empId") or item.get("EmpID") or "").strip()
+                if emp_key:
+                    previous = today_by_employee.get(emp_key)
+                    if previous is None or status_rank[effective] > status_rank[previous]:
+                        today_by_employee[emp_key] = effective
+
+        daily_trend = [
+            {
+                "date": day,
+                "present": values["present"],
+                "late": values["late"],
+                "working": values["working"],
+                "attended": values["attended"],
+            }
+            for day, values in sorted(daily.items())
+        ]
+
+        department_breakdown = [
+            {"department": name, "count": count}
+            for name, count in sorted(department_counts.items(), key=lambda pair: (-pair[1], pair[0]))
+        ]
+
+        today_statuses = list(today_by_employee.values())
+        today_attended = len(today_statuses)
+        today_present = sum(1 for value in today_statuses if value in {"present", "late"})
+        today_late = sum(1 for value in today_statuses if value == "late")
+        today_working = sum(1 for value in today_statuses if value in {"working", "currently working"})
+        today_headcount = max(total_employees, 0)
 
         total_working_opportunities = working_days * max(total_employees, 0)
         if total_working_opportunities <= 0 and (date or start_date or end_date):
@@ -1627,6 +1703,21 @@ class AttendanceService:
             "holidayCount": holiday_count,
             "weeklyOffCount": weekly_off_count,
             "attendanceRate": round(attendance_rate, 2),
+            # Last 30 attendance days across the whole filtered set, oldest first.
+            "dailyTrend": daily_trend[-30:],
+            "departmentBreakdown": department_breakdown,
+            # Live snapshot for the current date, deduplicated per employee: one employee checked
+            # in means attended == 1, which is what the dashboard cards read.
+            "today": {
+                "date": today_key,
+                "attended": today_attended,
+                "present": today_present,
+                "late": today_late,
+                "currentlyWorking": today_working,
+                "absent": max(0, today_headcount - today_attended),
+                "totalActiveEmployees": today_headcount,
+                "attendanceRate": round(today_attended / today_headcount * 100.0, 2) if today_headcount else 0.0,
+            },
         }
 
     # ----------------------------------------------------------------------
